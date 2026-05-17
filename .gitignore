@@ -1,0 +1,8 @@
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+logs/
+data/social_trends.csv
+data/dca_plan.json
