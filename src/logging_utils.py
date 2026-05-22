@@ -34,7 +34,7 @@ def log_signals(signals: dict[str, dict[str, float | int]], prices: dict[str, fl
     for symbol, info in signals.items():
         price = prices.get(symbol, float("nan"))
         logger.info(
-            "%s signal=%s score=%.3f price=%.3f social=%.3f volume=%.3f ret_N=%s close=%.2f sma_long=%.2f",
+            "%s signal=%s score=%.3f price_score=%.3f social=%.3f volume=%.3f ret_N=%s close=%.2f sma_long=%.2f",
             symbol,
             info.get("signal"),
             info.get("score", 0.0),

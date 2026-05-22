@@ -25,7 +25,7 @@ def create_trading_client(config: Config) -> TradingClient:
     return TradingClient(
         api_key=config.alpaca_api_key,
         secret_key=config.alpaca_api_secret,
-        paper=config.paper_trading,
+        paper=False,
         url_override=config.alpaca_base_url or None,
     )
 
@@ -135,14 +135,18 @@ def get_historical_daily_bars(
     extra_buffer_days: int = 250,
     data_client: StockHistoricalDataClient | None = None,
     end_date: datetime | None = None,
+    start_date: datetime | None = None,
     data_feed: str | DataFeed | None = "iex",
 ) -> dict[str, "pd.DataFrame"]:
     if data_client is None:
         raise ValueError("data_client is required")
 
     end = end_date or datetime.now(timezone.utc)
-    total_days = lookback_days + extra_buffer_days
-    start = end - timedelta(days=total_days * 2)
+    if start_date is None:
+        total_days = lookback_days + extra_buffer_days
+        start = end - timedelta(days=total_days * 2)
+    else:
+        start = start_date
 
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     for symbol in symbols:

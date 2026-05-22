@@ -1,4 +1,7 @@
 {
+  "active_strategy": "trend_following",
   "algorithm_enabled": true,
-  "options_trading_enabled": false
+  "backtest_strategy": "trend_following",
+  "options_strategy": "protective_put",
+  "options_trading_enabled": true
 }

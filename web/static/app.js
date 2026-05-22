@@ -1,7 +1,11 @@
+const SVG_NS = "http://www.w3.org/2000/svg";
 const BUCKET_NAMES = ["accumulate", "sell"];
-const MAX_AMOUNT = 100;
+const MAX_AMOUNT = 50;
 const WHEEL_STEP = 5;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const BACKTEST_PERIOD = "6m";
+const BACKTEST_LABEL = "6M";
+const BACKTEST_STORAGE_KEY = "tradingBot.backtests.6m.v3";
 
 const ENABLED_COLORS = {
   accumulate: "#024c4a",
@@ -9,26 +13,163 @@ const ENABLED_COLORS = {
 };
 
 const DISABLED_COLORS = {
-  accumulate: "#c8cfd3",
-  sell: "#d1cfc7",
+  accumulate: "#668f8b",
+  sell: "#a36d3c",
+};
+
+const STRATEGIES = [
+  {
+    key: "momentum_social",
+    name: "Momentum + Social",
+    status: "Live",
+    horizon: "Daily",
+    risk: "Medium",
+    logic: "Ranks the ETF universe every day, buys only names with positive medium-term momentum above the long moving average, then sizes positions by score, volatility, and portfolio caps.",
+    signals: ["N-day return", "21-day return", "Long SMA trend", "Social attention", "Sentiment/vendor score", "Volume z-score", "Realized volatility"],
+  },
+  {
+    key: "trend_following",
+    name: "Trend Following",
+    status: "Template",
+    horizon: "Daily",
+    risk: "Medium",
+    logic: "Stays with persistent uptrends and steps out when price loses the major trend, avoiding counter-trend entries.",
+    signals: ["Close vs 50/200 SMA", "Moving-average slope", "63-day return", "Trend gap", "Realized volatility"],
+  },
+  {
+    key: "mean_reversion",
+    name: "Mean Reversion",
+    status: "Template",
+    horizon: "Swing",
+    risk: "High",
+    logic: "Looks for short-term oversold pullbacks inside a larger uptrend, then exits as price reverts back toward its mean.",
+    signals: ["RSI reset", "20-day z-score", "Bollinger position", "200-day trend filter", "ATR stop distance"],
+  },
+  {
+    key: "breakout",
+    name: "Breakout",
+    status: "Template",
+    horizon: "Swing",
+    risk: "High",
+    logic: "Targets fresh range highs when participation expands, with position size tied to stop distance and volatility.",
+    signals: ["55-day high", "Volume expansion", "ATR compression", "Range width", "Trailing stop distance"],
+  },
+  {
+    key: "risk_parity",
+    name: "Risk Parity",
+    status: "Template",
+    horizon: "Portfolio",
+    risk: "Lower",
+    logic: "Balances portfolio risk so high-volatility assets receive smaller allocations and no single sleeve dominates drawdown.",
+    signals: ["20/60-day volatility", "Inverse-vol weight", "Correlation stress", "Drawdown guard", "Exposure cap"],
+  },
+  {
+    key: "dual_momentum",
+    name: "Dual Momentum",
+    status: "Template",
+    horizon: "Monthly",
+    risk: "Medium",
+    logic: "Rotates into the strongest assets only when they also clear an absolute momentum hurdle; otherwise it moves toward cash-like exposure.",
+    signals: ["6-month return", "12-month return", "Relative rank", "Absolute momentum hurdle", "Volatility filter"],
+  },
+  {
+    key: "user_dual_momentum",
+    name: "User ETF Dual Momentum",
+    status: "User",
+    horizon: "Monthly",
+    risk: "Medium",
+    logic: "Ranks the curated ETF universe by blended 12-month and 3-month momentum, requires risk-on assets to beat the cash hurdle, and moves to the available defensive sleeve or cash when risk-on fails.",
+    signals: ["12-month return", "3-month return", "Cash hurdle", "Risk-adjusted momentum", "Defensive sleeve"],
+  },
+];
+
+const OPTIONS_STRATEGIES = [
+  {
+    key: "covered_call",
+    name: "Covered Call",
+    risk: "Income",
+    description: "Sell calls against owned shares to collect premium, accepting capped upside.",
+    config: ["Underlying position", "30-45 DTE", "0.20-0.35 delta short call", "Roll rule before assignment"],
+  },
+  {
+    key: "cash_secured_put",
+    name: "Cash-Secured Put",
+    risk: "Entry",
+    description: "Sell puts only when willing to buy the underlying at the strike.",
+    config: ["Cash reserved for assignment", "20-45 DTE", "0.15-0.30 delta put", "Max allocation per symbol"],
+  },
+  {
+    key: "protective_put",
+    name: "Protective Put",
+    risk: "Hedge",
+    description: "Buy puts to define downside risk on an equity or ETF holding.",
+    config: ["Hedge ratio", "Expiry matching risk window", "Acceptable premium budget", "Strike near loss limit"],
+  },
+  {
+    key: "put_spread",
+    name: "Defined-Risk Put Spread",
+    risk: "Directional",
+    description: "Use a vertical spread to express bullish or bearish views with capped loss.",
+    config: ["Long and short strikes", "Debit/credit limit", "DTE", "Profit-taking and stop rules"],
+  },
+  {
+    key: "iron_condor",
+    name: "Iron Condor",
+    risk: "Neutral",
+    description: "Sell an out-of-the-money call spread and put spread when expecting range-bound movement.",
+    config: ["IV rank threshold", "Short strike deltas", "Wing width", "Exit at profit target or tested side"],
+  },
+];
+
+const NONE_ALGORITHM = {
+  key: "none",
+  name: "None",
+  status: "Idle",
+  horizon: BACKTEST_LABEL,
+  risk: "Flat",
+  logic: "Disables algorithmic trading and leaves the right-side snapshot focused on DCA activity or a flat cached baseline.",
+  signals: ["DCA schedule", "Planned buys", "Flat exposure"],
+};
+
+const NONE_OPTIONS = {
+  key: "none",
+  name: "None",
+  risk: "Idle",
+  description: "No options strategy is active.",
+  config: ["Options trading disabled"],
 };
 
 const state = {
   status: null,
-  account: null,
   universe: [],
-  controls: null,
+  controls: {
+    trading_account_id: "",
+    algorithm_enabled: false,
+    algorithm_power_confirmed: false,
+    options_trading_enabled: false,
+    active_strategy: "momentum_social",
+    options_strategy: "none",
+  },
+  accounts: [],
+  bot: null,
   dca: null,
-  selected: null,
   layout: null,
-  layoutKey: "",
   nodes: [],
-  nodesById: new Map(),
-  simulations: {},
-  boundaryTimer: null,
-  draft: null,
   invalidNodes: [],
-  historyPayload: null,
+  selected: null,
+  drag: null,
+  draft: null,
+  animationId: null,
+  backtests: {},
+  backtestLoading: {},
+  signals: {},
+  signalLoading: {},
+  universeProposal: null,
+  universeRefreshing: false,
+  universeApplying: false,
+  deckWheelLocked: false,
+  renderedAlgorithmDeckKey: "",
+  renderedOptionsDeckKey: "",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -38,7 +179,7 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.add("show");
   window.clearTimeout(showToast.timer);
-  showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2400);
+  showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
 function escapeHtml(value) {
@@ -51,13 +192,23 @@ function escapeHtml(value) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
-  return payload;
+  const apiBase = window.TRADING_API_BASE || "";
+  const timeoutMs = options.timeoutMs ?? 6000;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
+    const response = await fetch(`${apiBase}${path}`, {
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      ...fetchOptions,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+    return payload;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function money(value, digits = 0) {
@@ -69,26 +220,14 @@ function money(value, digits = 0) {
   });
 }
 
-function signedMoney(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
-  return `${Number(value) > 0 ? "+" : ""}${money(value)}`;
-}
-
 function num(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return Number(value).toFixed(digits);
 }
 
-function valueClass(value) {
-  const parsed = Number(value);
-  if (!parsed || Number.isNaN(parsed)) return "";
-  return parsed > 0 ? "positive" : "negative";
-}
-
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
-
 function isDcaEnabled() {
   return Boolean(state.dca?.plan?.enabled);
 }
@@ -97,44 +236,51 @@ function bucketColor(bucketName) {
   return isDcaEnabled() ? ENABLED_COLORS[bucketName] : DISABLED_COLORS[bucketName];
 }
 
-function nodeId(bucketName, symbol) {
-  return `${bucketName}:${symbol}`;
+function bucketStrokeColor(bucketName) {
+  return shadeColor(bucketColor(bucketName), isDcaEnabled() ? -48 : -34);
 }
 
-function bucketItems(bucket) {
-  return state.dca?.plan?.[bucket]?.items || [];
+function bucketItems(bucketName) {
+  return state.dca?.plan?.[bucketName]?.items || [];
 }
 
-function positionOrNull(position) {
-  if (!position || typeof position !== "object") return null;
-  return {
-    x: clamp(Number(position.x || 0), -1, 1),
-    y: clamp(Number(position.y || 0), -1, 1),
-  };
-}
-
-function setBucketItems(bucket, items) {
-  state.dca.plan[bucket].items = items.map((item) => {
-    const sanitized = {
-      ...item,
-      amount: clamp(Number(item.amount || 0), 0, MAX_AMOUNT),
-    };
-    const position = positionOrNull(item.position);
-    if (position) sanitized.position = position;
-    return sanitized;
-  });
-  state.dca.plan[bucket].amount = state.dca.plan[bucket].items.reduce(
+function setBucketItems(bucketName, items) {
+  state.dca.plan[bucketName].items = items.map((item) => ({
+    ...item,
+    amount: clamp(Number(item.amount || 0), 0, MAX_AMOUNT),
+    position: item.position
+      ? {
+        x: clamp(Number(item.position.x || 0), -1, 1),
+        y: clamp(Number(item.position.y || 0), -1, 1),
+      }
+      : undefined,
+  }));
+  state.dca.plan[bucketName].amount = state.dca.plan[bucketName].items.reduce(
     (total, item) => total + Number(item.amount || 0),
     0,
   );
 }
 
-function assignedSymbols() {
-  return new Set(BUCKET_NAMES.flatMap((bucket) => bucketItems(bucket).map((item) => item.symbol)));
+function assignedSymbols(bucketName) {
+  return new Set(bucketItems(bucketName).map((item) => item.symbol));
 }
 
 function itemRadius(amount) {
   return 18 + Math.sqrt(clamp(amount, 0, MAX_AMOUNT)) * 3.45;
+}
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  Object.entries(attrs).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) el.setAttribute(key, value);
+  });
+  return el;
+}
+
+function textEl(attrs, content) {
+  const el = svgEl("text", attrs);
+  el.textContent = content;
+  return el;
 }
 
 function calculateLayout() {
@@ -144,14 +290,10 @@ function calculateLayout() {
   const stacked = width < 760;
   const baseR = stacked ? Math.min(width * 0.35, height * 0.19, 210) : Math.min(width * 0.2, height * 0.36, 292);
   const maxR = stacked ? Math.min(width * 0.43, height * 0.24, 260) : Math.min(width * 0.27, height * 0.44, 365);
-  const nextKey = `${Math.round(width)}:${Math.round(height)}:${stacked}`;
-  const changed = nextKey !== state.layoutKey;
 
-  state.layoutKey = nextKey;
   state.layout = {
     width,
     height,
-    changed,
     stacked,
     buckets: stacked
       ? {
@@ -175,21 +317,11 @@ function fitBucketRadii() {
   });
 }
 
-function fallbackPosition(index, count, bucketName) {
-  if (count <= 1) return { x: 0, y: 0 };
-  const ring = Math.sqrt((index + 1) / (count + 1));
-  const angle = index * GOLDEN_ANGLE + (bucketName === "sell" ? 0.9 : 0);
-  return {
-    x: Math.cos(angle) * ring * 0.68,
-    y: Math.sin(angle) * ring * 0.68,
-  };
-}
-
 function pointFromPosition(position, bucket, radius) {
   const usable = Math.max(bucket.r - radius - 18, 1);
   return {
-    x: bucket.cx + clamp(position.x, -1, 1) * usable,
-    y: bucket.cy + clamp(position.y, -1, 1) * usable,
+    x: bucket.cx + clamp(Number(position?.x || 0), -1, 1) * usable,
+    y: bucket.cy + clamp(Number(position?.y || 0), -1, 1) * usable,
   };
 }
 
@@ -198,6 +330,16 @@ function pointToPosition(point, bucket, radius) {
   return {
     x: clamp((point.x - bucket.cx) / usable, -1, 1),
     y: clamp((point.y - bucket.cy) / usable, -1, 1),
+  };
+}
+
+function fallbackPosition(index, count, bucketName) {
+  if (count <= 1) return { x: 0, y: 0 };
+  const ring = Math.sqrt((index + 1) / (count + 1));
+  const angle = index * GOLDEN_ANGLE + (bucketName === "sell" ? 0.9 : 0);
+  return {
+    x: Math.cos(angle) * ring * 0.68,
+    y: Math.sin(angle) * ring * 0.68,
   };
 }
 
@@ -230,47 +372,85 @@ function bucketAtPoint(point) {
   return distance(point, bucket) <= bucket.r + 44 ? bucketName : null;
 }
 
-function buildNodes() {
-  const nextNodesById = new Map();
-  const nodes = [];
+function eventToSvgPoint(event) {
+  const svg = $("#bubbleBoard");
+  const rect = svg.getBoundingClientRect();
+  return {
+    x: ((event.clientX - rect.left) / rect.width) * state.layout.width,
+    y: ((event.clientY - rect.top) / rect.height) * state.layout.height,
+  };
+}
 
+function organicPath(bucketName, phase = 0) {
+  const bucket = state.layout.buckets[bucketName];
+  const nodes = state.nodes.filter((node) => node.bucketName === bucketName);
+  const points = [];
+  const pointCount = 112;
+  for (let index = 0; index < pointCount; index += 1) {
+    const angle = (index / pointCount) * Math.PI * 2;
+    let radius =
+      bucket.r +
+      Math.sin(angle * 2.1 + phase) * bucket.r * 0.025 +
+      Math.cos(angle * 3.4 - phase * 0.7) * bucket.r * 0.02;
+
+    nodes.forEach((node) => {
+      const nodeAngle = Math.atan2(node.y - bucket.cy, node.x - bucket.cx);
+      const delta = Math.atan2(Math.sin(angle - nodeAngle), Math.cos(angle - nodeAngle));
+      const influence = Math.exp(-(delta ** 2) / 0.15);
+      const reach = Math.hypot(node.x - bucket.cx, node.y - bucket.cy) + node.radius + 24;
+      radius = Math.max(radius, bucket.r + Math.max(0, reach - bucket.r) * influence + node.radius * 0.08 * influence);
+    });
+
+    radius = Math.min(radius, bucket.maxR + 58);
+    points.push([bucket.cx + Math.cos(angle) * radius, bucket.cy + Math.sin(angle) * radius]);
+  }
+  return smoothClosedPath(points);
+}
+
+function smoothClosedPath(points) {
+  if (!points.length) return "";
+  const commands = [`M ${points[0][0].toFixed(2)} ${points[0][1].toFixed(2)}`];
+  points.forEach((point, index) => {
+    const next = points[(index + 1) % points.length];
+    const midX = (point[0] + next[0]) / 2;
+    const midY = (point[1] + next[1]) / 2;
+    commands.push(`Q ${point[0].toFixed(2)} ${point[1].toFixed(2)} ${midX.toFixed(2)} ${midY.toFixed(2)}`);
+  });
+  return `${commands.join(" ")} Z`;
+}
+
+function buildNodes() {
+  const previous = new Map(state.nodes.map((node) => [`${node.bucketName}:${node.symbol}`, node]));
+  state.nodes = [];
   BUCKET_NAMES.forEach((bucketName) => {
     const bucket = state.layout.buckets[bucketName];
     const items = bucketItems(bucketName);
     items.forEach((item, index) => {
-      const id = nodeId(bucketName, item.symbol);
       const radius = itemRadius(item.amount);
-      const previous = state.layout.changed ? null : state.nodesById.get(id);
-      const stored = positionOrNull(item.position) || fallbackPosition(index, items.length, bucketName);
-      const point = previous || pointFromPosition(stored, bucket, radius);
+      const id = `${bucketName}:${item.symbol}`;
+      const oldNode = previous.get(id);
+      const fallback = fallbackPosition(index, items.length, bucketName);
+      const point = oldNode || pointFromPosition(item.position || fallback, bucket, radius);
       const clamped = clampPointToBucket(point, bucketName, radius);
-      const node = {
+      state.nodes.push({
         id,
         symbol: item.symbol,
         name: item.name,
         amount: clamp(Number(item.amount || 0), 0, MAX_AMOUNT),
         bucketName,
+        targetBucket: bucketName,
         radius,
         x: clamped.x,
         y: clamped.y,
-        targetBucket: bucketName,
-      };
-      nodes.push(node);
-      nextNodesById.set(id, node);
+        vx: oldNode?.vx || 0,
+        vy: oldNode?.vy || 0,
+      });
     });
   });
-
-  state.nodes = nodes;
-  state.nodesById = nextNodesById;
 }
 
-function findItem(bucketName, symbol) {
-  return bucketItems(bucketName).find((item) => item.symbol === symbol);
-}
-
-function applyNodeToItem(node) {
-  if (!state.layout) return;
-  const item = findItem(node.bucketName, node.symbol);
+function syncNodeToPlan(node) {
+  const item = bucketItems(node.bucketName).find((candidate) => candidate.symbol === node.symbol);
   if (!item) return;
   const bucket = state.layout.buckets[node.bucketName];
   const clamped = clampPointToBucket({ x: node.x, y: node.y }, node.bucketName, node.radius);
@@ -278,274 +458,206 @@ function applyNodeToItem(node) {
   node.y = clamped.y;
   item.amount = clamp(node.amount, 0, MAX_AMOUNT);
   item.position = pointToPosition(clamped, bucket, node.radius);
-  setBucketItems(node.bucketName, bucketItems(node.bucketName));
 }
 
-function syncNodePositions() {
-  if (!state.layout) return;
-  state.nodes.forEach(applyNodeToItem);
-}
-
-function angleDelta(a, b) {
-  return Math.atan2(Math.sin(a - b), Math.cos(a - b));
-}
-
-function organicPath(bucketName, phase = 0) {
-  const bucket = state.layout.buckets[bucketName];
-  const nodes = state.nodes.filter((node) => node.bucketName === bucketName);
-  const points = d3.range(30).map((index) => {
-    const angle = (index / 30) * Math.PI * 2;
-    let radius =
-      bucket.r +
-      Math.sin(angle * 2.1 + phase) * bucket.r * 0.028 +
-      Math.cos(angle * 3.4 - phase * 0.7) * bucket.r * 0.022;
-
-    nodes.forEach((node) => {
-      const nodeAngle = Math.atan2(node.y - bucket.cy, node.x - bucket.cx);
-      const influence = Math.exp(-(angleDelta(angle, nodeAngle) ** 2) / 0.15);
-      const reach = Math.hypot(node.x - bucket.cx, node.y - bucket.cy) + node.radius + 24;
-      radius = Math.max(radius, bucket.r + Math.max(0, reach - bucket.r) * influence + node.radius * 0.09 * influence);
-    });
-
-    radius = Math.min(radius, bucket.maxR + 58);
-    return [bucket.cx + Math.cos(angle) * radius, bucket.cy + Math.sin(angle) * radius];
-  });
-
-  return d3.line().curve(d3.curveBasisClosed)(points);
-}
-
-function updateBucketArtwork() {
-  const phase = performance.now() / 1050;
-  const svg = d3.select("#bubbleBoard");
-  BUCKET_NAMES.forEach((bucketName) => {
-    const total = bucketItems(bucketName).reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    svg.select(`#${bucketName}-blob`).attr("d", organicPath(bucketName, phase));
-    svg.select(`#${bucketName}-total`).text(isDcaEnabled() ? money(total) : "DCA off");
-  });
-}
-
-function updateAssetArtwork() {
-  const svg = d3.select("#bubbleBoard");
-  svg
-    .selectAll("g.asset.live")
-    .data(state.nodes, (node) => node.id)
-    .attr("class", (node) => `asset live ${state.selected === node.symbol ? "selected" : ""}`)
-    .attr("transform", (node) => `translate(${node.x}, ${node.y})`)
-    .select("circle")
-    .attr("r", (node) => node.radius)
-    .attr("fill", (node) => bucketColor(node.bucketName));
-
-  svg
-    .selectAll("g.asset.live")
-    .select(".amount-label")
-    .text((node) => `$${Math.round(node.amount || 0)}`);
-}
-
-function updateArtwork() {
-  updateAssetArtwork();
-  updateBucketArtwork();
-}
-
-function stopMotion() {
-  Object.values(state.simulations).forEach((simulation) => simulation.stop());
-  state.simulations = {};
-  if (state.boundaryTimer) {
-    state.boundaryTimer.stop();
-    state.boundaryTimer = null;
-  }
-}
-
-function keepNodesInside(bucketName) {
-  state.nodes
-    .filter((node) => node.bucketName === bucketName)
-    .forEach((node) => {
-      const clamped = clampPointToBucket({ x: node.x, y: node.y }, bucketName, node.radius);
-      node.x = clamped.x;
-      node.y = clamped.y;
-    });
-}
-
-function startMotion() {
-  stopMotion();
-  BUCKET_NAMES.forEach((bucketName) => {
-    const bucket = state.layout.buckets[bucketName];
-    const nodes = state.nodes.filter((node) => node.bucketName === bucketName);
-    if (!nodes.length) return;
-    state.simulations[bucketName] = d3
-      .forceSimulation(nodes)
-      .alpha(0.85)
-      .alphaDecay(0.045)
-      .velocityDecay(0.42)
-      .force("x", d3.forceX(bucket.cx).strength(0.027))
-      .force("y", d3.forceY(bucket.cy).strength(0.027))
-      .force("collide", d3.forceCollide((node) => node.radius + 8).iterations(5))
-      .on("tick", () => {
-        keepNodesInside(bucketName);
-        updateArtwork();
-      })
-      .on("end", syncNodePositions);
-  });
-  state.boundaryTimer = d3.timer(() => updateBucketArtwork());
-}
-
-function restartBucket(bucketName) {
-  const simulation = state.simulations[bucketName];
-  if (!simulation) return;
-  simulation.force("collide", d3.forceCollide((node) => node.radius + 8).iterations(5));
-  simulation.alpha(0.72).restart();
-}
-
-function renderDraft(svg) {
-  if (!state.draft) return;
-  const draft = state.draft;
-  const group = svg.append("g").attr("class", "asset draft").attr("transform", `translate(${draft.x}, ${draft.y})`);
-  group.append("circle").attr("r", draft.radius).attr("fill", bucketColor(draft.bucketName));
-}
-
-function renderInvalidNodes(svg) {
-  const now = Date.now();
-  state.invalidNodes = state.invalidNodes.filter((node) => node.expiresAt > now);
-  const invalids = svg.append("g").attr("class", "invalid-layer");
-  invalids
-    .selectAll("g.asset.invalid")
-    .data(state.invalidNodes, (node) => node.id)
-    .join("g")
-    .attr("class", "asset invalid")
-    .attr("transform", (node) => `translate(${node.x}, ${node.y})`)
-    .each(function renderInvalid(node) {
-      const group = d3.select(this);
-      group.append("circle").attr("r", node.radius).attr("fill", "#b42318");
-      group.append("text").attr("class", "symbol-label").attr("y", -4).text(node.symbol);
-      group.append("text").attr("class", "amount-label").attr("y", 14).text("not found");
-    });
+function syncNodesToPlan() {
+  state.nodes.forEach(syncNodeToPlan);
+  BUCKET_NAMES.forEach((bucketName) => setBucketItems(bucketName, bucketItems(bucketName)));
 }
 
 function renderBoard() {
-  if (!window.d3 || !state.dca?.plan) return;
+  if (!state.dca?.plan) return;
+  window.cancelAnimationFrame(state.animationId);
   document.body.classList.toggle("dca-off", !isDcaEnabled());
   calculateLayout();
   fitBucketRadii();
   buildNodes();
 
-  const svg = d3.select("#bubbleBoard");
-  const { width, height, buckets } = state.layout;
-  svg.attr("viewBox", `0 0 ${width} ${height}`);
-  svg.selectAll("*").remove();
-  svg.on("dblclick", handleBoardDoubleClick);
+  const svg = $("#bubbleBoard");
+  svg.setAttribute("viewBox", `0 0 ${state.layout.width} ${state.layout.height}`);
+  svg.replaceChildren();
 
-  const bucketLayer = svg.append("g").attr("class", "bucket-layer");
   BUCKET_NAMES.forEach((bucketName) => {
-    const bucket = buckets[bucketName];
+    const bucket = state.layout.buckets[bucketName];
     const color = bucketColor(bucketName);
-    bucketLayer
-      .append("path")
-      .attr("id", `${bucketName}-blob`)
-      .attr("class", `bucket-blob ${bucketName}`)
-      .attr("fill", color)
-      .attr("stroke", d3.rgb(color).darker(1.5).toString())
-      .attr("d", organicPath(bucketName));
-    bucketLayer
-      .append("text")
-      .attr("class", "bucket-label")
-      .attr("x", bucket.cx)
-      .attr("y", bucket.cy - 14)
-      .attr("text-anchor", "middle")
-      .attr("fill", color)
-      .text(bucket.label);
-    bucketLayer
-      .append("text")
-      .attr("id", `${bucketName}-total`)
-      .attr("class", "bucket-total")
-      .attr("x", bucket.cx)
-      .attr("y", bucket.cy + 24)
-      .attr("text-anchor", "middle")
-      .attr("fill", color)
-      .text(isDcaEnabled() ? money(bucketItems(bucketName).reduce((sum, item) => sum + Number(item.amount || 0), 0)) : "DCA off");
+    const blob = svgEl("path", {
+      id: `${bucketName}-blob`,
+      class: `bucket-blob ${bucketName}`,
+      fill: color,
+      stroke: bucketStrokeColor(bucketName),
+      d: organicPath(bucketName),
+    });
+    svg.appendChild(blob);
+    svg.appendChild(textEl({
+      class: "bucket-label",
+      x: bucket.cx,
+      y: bucket.cy - 14,
+      "text-anchor": "middle",
+      fill: color,
+    }, bucket.label));
+    svg.appendChild(textEl({
+      id: `${bucketName}-total`,
+      class: "bucket-total",
+      x: bucket.cx,
+      y: bucket.cy + 24,
+      "text-anchor": "middle",
+      fill: color,
+    }, isDcaEnabled() ? money(bucketItems(bucketName).reduce((sum, item) => sum + Number(item.amount || 0), 0)) : "DCA off"));
   });
 
-  const assets = svg
-    .append("g")
-    .attr("class", "asset-layer")
-    .selectAll("g.asset")
-    .data(state.nodes, (node) => node.id)
-    .join("g")
-    .attr("class", (node) => `asset live ${state.selected === node.symbol ? "selected" : ""}`)
-    .attr("transform", (node) => `translate(${node.x}, ${node.y})`)
-    .call(d3.drag().on("start", dragStart).on("drag", dragging).on("end", dragEnd))
-    .on("click", (_, node) => {
-      state.selected = node.symbol;
-      updateArtwork();
-    })
-    .on("dblclick", (event, node) => {
-      event.stopPropagation();
-      removeSymbol(node.bucketName, node.symbol);
-    })
-    .on("wheel", wheelAsset);
+  state.nodes.forEach((node) => renderAsset(svg, node, "live"));
+  state.invalidNodes = state.invalidNodes.filter((node) => node.expiresAt > Date.now());
+  state.invalidNodes.forEach((node) => renderInvalidAsset(svg, node));
+  if (state.draft) renderDraft(svg, state.draft);
 
-  assets
-    .append("circle")
-    .attr("r", (node) => node.radius)
-    .attr("fill", (node) => bucketColor(node.bucketName));
-  assets.append("title").text((node) => `${node.symbol}: $${node.amount} ${node.bucketName}`);
-  assets.append("text").attr("class", "symbol-label").attr("y", -5).text((node) => node.symbol);
-  assets
-    .append("text")
-    .attr("class", "amount-label")
-    .attr("y", 14)
-    .text((node) => `$${Math.round(node.amount || 0)}`);
-
-  renderDraft(svg);
-  renderInvalidNodes(svg);
-  startMotion();
+  svg.ondblclick = handleBoardDoubleClick;
+  startAnimation();
 }
 
-function dragStart(event, node) {
+function renderAsset(svg, node, extraClass) {
+  const group = svgEl("g", {
+    class: `asset ${extraClass} ${state.selected === node.symbol ? "selected" : ""}`,
+    transform: `translate(${node.x}, ${node.y})`,
+    "data-id": node.id,
+  });
+  group.appendChild(svgEl("circle", { r: node.radius, fill: bucketColor(node.bucketName) }));
+  group.appendChild(textEl({ class: "symbol-label", y: -5 }, node.symbol));
+  group.appendChild(textEl({ class: "amount-label", y: 14 }, `$${Math.round(node.amount)}`));
+  group.addEventListener("pointerdown", (event) => startDrag(event, node));
+  group.addEventListener("wheel", (event) => resizeNode(event, node), { passive: false });
+  group.addEventListener("dblclick", (event) => {
+    event.stopPropagation();
+    removeSymbol(node.bucketName, node.symbol);
+  });
+  svg.appendChild(group);
+}
+
+function renderDraft(svg, node) {
+  const group = svgEl("g", { class: "asset draft", transform: `translate(${node.x}, ${node.y})` });
+  group.appendChild(svgEl("circle", { r: node.radius, fill: bucketColor(node.bucketName) }));
+  // show nothing in-SVG when drafting; the visible caret is provided by the positioned #symbolEntry input
+  group.appendChild(textEl({ class: "symbol-label", y: -5 }, node.symbol || ""));
+  group.appendChild(textEl({ class: "amount-label", y: 14 }, "$25"));
+  svg.appendChild(group);
+}
+
+function renderInvalidAsset(svg, node) {
+  const group = svgEl("g", { class: "asset invalid", transform: `translate(${node.x}, ${node.y})` });
+  group.appendChild(svgEl("circle", { r: node.radius, fill: "#b42318" }));
+  group.appendChild(textEl({ class: "symbol-label", y: -5 }, node.symbol));
+  // Do not render any "not found" text inside the invalid asset; red circle + vanish is sufficient
+  svg.appendChild(group);
+}
+
+function updateBoardElements(phase = 0) {
+  BUCKET_NAMES.forEach((bucketName) => {
+    const blob = $(`#${bucketName}-blob`);
+    const total = $(`#${bucketName}-total`);
+    if (blob) blob.setAttribute("d", organicPath(bucketName, phase));
+    if (total) {
+      total.textContent = isDcaEnabled()
+        ? money(bucketItems(bucketName).reduce((sum, item) => sum + Number(item.amount || 0), 0))
+        : "DCA off";
+    }
+  });
+  state.nodes.forEach((node) => {
+    const group = Array.from(document.querySelectorAll(".asset.live")).find((element) => element.dataset.id === node.id);
+    if (!group) return;
+    group.setAttribute("transform", `translate(${node.x}, ${node.y})`);
+    group.querySelector("circle")?.setAttribute("r", node.radius);
+    const amount = group.querySelector(".amount-label");
+    if (amount) amount.textContent = `$${Math.round(node.amount)}`;
+  });
+}
+
+function startAnimation() {
+  const tick = () => {
+    stepPhysics();
+    updateBoardElements(performance.now() / 1050);
+    state.animationId = window.requestAnimationFrame(tick);
+  };
+  state.animationId = window.requestAnimationFrame(tick);
+}
+
+function stepPhysics() {
+  BUCKET_NAMES.forEach((bucketName) => {
+    const bucket = state.layout.buckets[bucketName];
+    const nodes = state.nodes.filter((node) => node.bucketName === bucketName);
+    nodes.forEach((node, index) => {
+      if (state.drag?.node === node) return;
+      node.vx += (bucket.cx - node.x) * 0.002;
+      node.vy += (bucket.cy - node.y) * 0.002;
+      for (let otherIndex = index + 1; otherIndex < nodes.length; otherIndex += 1) {
+        const other = nodes[otherIndex];
+        const dx = other.x - node.x;
+        const dy = other.y - node.y;
+        const dist = Math.max(Math.hypot(dx, dy), 0.1);
+        const minDist = node.radius + other.radius + 8;
+        if (dist < minDist) {
+          const push = (minDist - dist) / dist * 0.018;
+          const px = dx * push;
+          const py = dy * push;
+          if (state.drag?.node !== node) {
+            node.vx -= px;
+            node.vy -= py;
+          }
+          if (state.drag?.node !== other) {
+            other.vx += px;
+            other.vy += py;
+          }
+        }
+      }
+      node.vx *= 0.86;
+      node.vy *= 0.86;
+      node.x += node.vx;
+      node.y += node.vy;
+      const clamped = clampPointToBucket({ x: node.x, y: node.y }, bucketName, node.radius);
+      node.x = clamped.x;
+      node.y = clamped.y;
+      syncNodeToPlan(node);
+    });
+  });
+}
+
+function startDrag(event, node) {
+  event.preventDefault();
   hideSymbolEntry();
   state.selected = node.symbol;
-  node.fx = node.x;
-  node.fy = node.y;
-  d3.select(this).raise().classed("dragging", true);
-  restartBucket(node.bucketName);
+  state.drag = { node, pointerId: event.pointerId };
+  event.currentTarget.setPointerCapture(event.pointerId);
+  event.currentTarget.classList.add("dragging");
+  event.currentTarget.onpointermove = (moveEvent) => dragNode(moveEvent, node);
+  event.currentTarget.onpointerup = (upEvent) => endDrag(upEvent, node);
+  event.currentTarget.onpointercancel = (upEvent) => endDrag(upEvent, node);
 }
 
-function dragging(event, node) {
-  const targetBucket = nearestBucket({ x: event.x, y: event.y });
-  const clamped = clampPointToBucket({ x: event.x, y: event.y }, targetBucket, node.radius);
-  node.targetBucket = targetBucket;
+function dragNode(event, node) {
+  const point = eventToSvgPoint(event);
+  const bucketName = nearestBucket(point);
+  const clamped = clampPointToBucket(point, bucketName, node.radius);
+  node.targetBucket = bucketName;
+  node.bucketName = bucketName;
   node.x = clamped.x;
   node.y = clamped.y;
-  node.fx = clamped.x;
-  node.fy = clamped.y;
-  d3.select(this)
-    .attr("transform", `translate(${node.x}, ${node.y})`)
-    .select("circle")
-    .attr("fill", bucketColor(targetBucket));
-  updateBucketArtwork();
+  node.vx = 0;
+  node.vy = 0;
 }
 
-function dragEnd(event, node) {
-  node.fx = null;
-  node.fy = null;
-  d3.select(this).classed("dragging", false);
-  moveAsset(node.bucketName, node.targetBucket || node.bucketName, node.symbol, node.amount, { x: node.x, y: node.y });
+function endDrag(event, node) {
+  event.currentTarget.classList.remove("dragging");
+  state.drag = null;
+  moveAsset(node);
   renderDca();
 }
 
-function wheelAsset(event, node) {
+function resizeNode(event, node) {
   event.preventDefault();
   event.stopPropagation();
-  const direction = event.deltaY < 0 ? 1 : -1;
-  const amount = clamp(Math.round(node.amount / WHEEL_STEP) * WHEEL_STEP + direction * WHEEL_STEP, 0, MAX_AMOUNT);
-  if (amount === node.amount) return;
-
-  node.amount = amount;
-  node.radius = itemRadius(amount);
-  const clamped = clampPointToBucket({ x: node.x, y: node.y }, node.bucketName, node.radius);
-  node.x = clamped.x;
-  node.y = clamped.y;
-  applyNodeToItem(node);
-  updateArtwork();
-  restartBucket(node.bucketName);
+  const direction = event.deltaY > 0 ? 1 : -1;
+  node.amount = clamp(Math.round(node.amount / WHEEL_STEP) * WHEEL_STEP + direction * WHEEL_STEP, 0, MAX_AMOUNT);
+  node.radius = itemRadius(node.amount);
+  syncNodeToPlan(node);
+  renderDca();
 }
 
 function handleBoardDoubleClick(event) {
@@ -553,40 +665,23 @@ function handleBoardDoubleClick(event) {
   const point = eventToSvgPoint(event);
   const bucketName = bucketAtPoint(point);
   if (!bucketName) return;
-  event.preventDefault();
-  event.stopPropagation();
   showSymbolEntry(bucketName, point);
-}
-
-function eventToSvgPoint(event) {
-  const [x, y] = d3.pointer(event, $("#bubbleBoard"));
-  return { x, y };
 }
 
 function showSymbolEntry(bucketName, point) {
   const radius = itemRadius(25);
   const clamped = clampPointToBucket(point, bucketName, radius);
-  state.draft = {
-    id: `draft:${Date.now()}`,
-    bucketName,
-    x: clamped.x,
-    y: clamped.y,
-    radius,
-  };
+  state.draft = { bucketName, x: clamped.x, y: clamped.y, radius, symbol: "" };
   renderBoard();
 
   const entry = $("#symbolEntry");
   const rect = $("#bubbleBoard").getBoundingClientRect();
   entry.value = "";
-  entry.placeholder = "SYM";
-  entry.dataset.bucket = bucketName;
-  entry.style.left = `${rect.left + (clamped.x / state.layout.width) * rect.width}px`;
-  entry.style.top = `${rect.top + (clamped.y / state.layout.height) * rect.height}px`;
+  entry.style.left = `${window.scrollX + rect.left + (clamped.x / state.layout.width) * rect.width}px`;
+  // nudge vertically so the caret aligns with the SVG symbol-label (which is slightly above center)
+  entry.style.top = `${window.scrollY + rect.top + (clamped.y / state.layout.height) * rect.height - 6}px`;
   entry.className = "show";
-  window.setTimeout(() => {
-    entry.focus();
-    entry.select();
-  }, 0);
+  window.setTimeout(() => entry.focus(), 0);
 }
 
 function hideSymbolEntry(cancelDraft = true) {
@@ -606,360 +701,1096 @@ function commitSymbolEntry() {
   const draft = { ...state.draft };
   entry.className = "";
   state.draft = null;
-
   if (!symbol) {
     renderBoard();
     return;
   }
 
-  const row = state.universe.find((item) => item.enabled && item.symbol === symbol);
-  if (!row || assignedSymbols().has(symbol)) {
-    addInvalidSymbol(symbol, draft);
+  const row = state.universe.find((item) => item.symbol === symbol);
+  const isDuplicate = assignedSymbols(draft.bucketName).has(symbol);
+  if (!row || !row.enabled || isDuplicate) {
+    state.invalidNodes.push({
+      id: `invalid:${symbol}:${Date.now()}`,
+      symbol,
+      bucketName: draft.bucketName,
+      x: draft.x,
+      y: draft.y,
+      radius: draft.radius,
+      expiresAt: Date.now() + 3000,
+    });
+    renderBoard();
+    showToast(isDuplicate ? `${symbol} already in bucket` : `${symbol} is not allowed to trade`);
+    window.setTimeout(renderBoard, 3100);
     return;
   }
 
-  addSymbolAt(draft.bucketName, row, { x: draft.x, y: draft.y });
-}
-
-function addInvalidSymbol(symbol, draft) {
-  const invalid = {
-    id: `invalid:${symbol}:${Date.now()}`,
-    symbol,
-    bucketName: draft.bucketName,
-    x: draft.x,
-    y: draft.y,
-    radius: draft.radius,
-    expiresAt: Date.now() + 5000,
-  };
-  state.invalidNodes.push(invalid);
-  renderBoard();
-  window.setTimeout(() => {
-    state.invalidNodes = state.invalidNodes.filter((node) => node.id !== invalid.id);
-    renderBoard();
-  }, 5100);
-}
-
-function addSymbolAt(bucketName, row, point) {
   const amount = 25;
-  const radius = itemRadius(amount);
-  const bucket = state.layout.buckets[bucketName];
-  const clamped = clampPointToBucket(point, bucketName, radius);
-  state.dca.plan[bucketName].items.push({
+  const bucket = state.layout.buckets[draft.bucketName];
+  state.dca.plan[draft.bucketName].items.push({
     symbol: row.symbol,
     name: row.name,
     bucket: row.bucket,
     amount,
-    position: pointToPosition(clamped, bucket, radius),
+    position: pointToPosition(draft, bucket, itemRadius(amount)),
   });
-  setBucketItems(bucketName, state.dca.plan[bucketName].items);
+  setBucketItems(draft.bucketName, state.dca.plan[draft.bucketName].items);
   renderDca();
   showToast(`${row.symbol} added`);
 }
 
+function removeSymbol(bucketName, symbol) {
+  setBucketItems(
+    bucketName,
+    bucketItems(bucketName).filter((item) => item.symbol !== symbol),
+  );
+  renderDca();
+}
+
+function moveAsset(node) {
+  const fromItems = BUCKET_NAMES.flatMap((bucketName) =>
+    bucketItems(bucketName).map((item) => ({ bucketName, item })),
+  );
+  const found = fromItems.find(({ item }) => item.symbol === node.symbol);
+  if (!found) return;
+  BUCKET_NAMES.forEach((bucketName) => {
+    state.dca.plan[bucketName].items = bucketItems(bucketName).filter((item) => item.symbol !== node.symbol);
+  });
+  const bucket = state.layout.buckets[node.bucketName];
+  found.item.amount = node.amount;
+  found.item.position = pointToPosition(node, bucket, node.radius);
+  state.dca.plan[node.bucketName].items.push(found.item);
+  BUCKET_NAMES.forEach((bucketName) => setBucketItems(bucketName, bucketItems(bucketName)));
+}
+
 function renderControls() {
-  const plan = state.dca?.plan;
-  if (!plan) return;
-  plan.max_item_amount = MAX_AMOUNT;
-  $("#dcaEnabled").checked = Boolean(plan.enabled);
-  $("#algorithmEnabled").checked = Boolean(state.controls?.algorithm_enabled);
-  $("#optionsEnabled").checked = Boolean(state.controls?.options_trading_enabled);
+  $("#cronPattern").value = state.dca?.plan?.schedule_pattern || "0 12 * * 1-5";
+  renderScheduleDescription();
+  renderAlgorithmPower();
+  renderAlgorithmDeck();
+  renderOptionsDeck();
+  updateFeatureToggles();
 }
 
-function renderAccount() {
-  const account = state.account;
-  if (!account) return;
-  const dayPl = Number(account.day_pl || 0);
-  document.body.dataset.pnl = dayPl > 0 ? "positive" : dayPl < 0 ? "negative" : "flat";
-  $("#equity").textContent = money(account.equity);
-  $("#cash").textContent = money(account.cash);
-  $("#dayPl").textContent = signedMoney(account.day_pl);
-  $("#dayPl").className = valueClass(account.day_pl);
-  $("#totalPl").textContent = signedMoney(account.total_pl ?? account.open_pl);
-  $("#totalPl").className = valueClass(account.total_pl ?? account.open_pl);
-  $("#positionsBody").innerHTML = account.positions.length
-    ? account.positions
-      .map(
-        (row) => `
-            <tr>
-              <td><strong>${escapeHtml(row.symbol)}</strong></td>
-              <td>${num(row.qty, 3)}</td>
-              <td>${money(row.market_value)}</td>
-              <td class="${valueClass(row.unrealized_pl)}">${signedMoney(row.unrealized_pl)}</td>
-            </tr>
-          `,
-      )
-      .join("")
-    : `<tr><td colspan="4">No open positions.</td></tr>`;
+function renderDca() {
+  if (!state.dca?.plan) return;
+  syncNodesToPlan();
+  renderControls();
+  renderBoard();
 }
 
-function renderOrders(payload) {
-  const rows = payload?.rows || [];
-  const ordersPanel = $("#ordersPanel table");
-  if (!ordersPanel) return;
+function dateTicks(rows, zoom) {
+  if (rows.length <= 2) return rows;
+  const tickCount = zoom >= 4 ? 6 : zoom >= 2 ? 5 : 4;
+  const step = Math.max(1, Math.floor((rows.length - 1) / (tickCount - 1)));
+  const ticks = rows.filter((_, index) => index % step === 0);
+  if (ticks.at(-1) !== rows.at(-1)) ticks.push(rows.at(-1));
+  return ticks;
+}
 
-  if (rows.length) {
-    const tbody = ordersPanel.querySelector("tbody");
-    tbody.innerHTML = rows
-      .map((order) => {
-        const qty = order.notional ? money(order.notional) : `${num(order.qty, 3)} sh`;
-        return `
-          <tr>
-            <td><strong>${escapeHtml(order.symbol)}</strong></td>
-            <td>${escapeHtml(order.side)}</td>
-            <td>${qty}</td>
-            <td>${escapeHtml(order.status)}</td>
-          </tr>
-        `;
-      })
-      .join("");
-  } else {
-    const tbody = ordersPanel.querySelector("tbody");
-    tbody.innerHTML = `<tr><td colspan="4">No orders today.</td></tr>`;
-  }
+function formatDateTick(date, zoom) {
+  const options = zoom >= 4 ? { month: "short", day: "numeric" } : { month: "short" };
+  return date.toLocaleDateString(undefined, options);
+}
 
+function algorithmChoices() {
+  return [NONE_ALGORITHM, ...STRATEGIES];
+}
 
-  function renderGrowthChart(payload) {
-    const svg = d3.select("#growthChart");
-    let rows = (payload?.rows || [])
-      .map((row) => ({ ...row, date: new Date(row.timestamp), equity: Number(row.equity) }))
-      .filter((row) => Number.isFinite(row.equity) && !Number.isNaN(row.date.getTime()));
-    const firstFundedIndex = rows.findIndex((row) => row.equity > 0);
-    if (firstFundedIndex > 0) rows = rows.slice(firstFundedIndex);
-    const width = $("#growthChart").clientWidth || 420;
-    const height = $("#growthChart").clientHeight || 180;
-    const margin = { top: 14, right: 12, bottom: 22, left: 42 };
-    svg.attr("viewBox", `0 0 ${width} ${height}`);
-    svg.selectAll("*").remove();
+function optionsChoices() {
+  return [NONE_OPTIONS, ...OPTIONS_STRATEGIES];
+}
 
-    if (rows.length < 2) {
-      svg
-        .append("text")
-        .attr("x", width / 2)
-        .attr("y", height / 2)
-        .attr("text-anchor", "middle")
-        .attr("class", "empty-chart")
-        .text("No history yet");
-      return;
-    }
+function strategyByKey(strategyKey) {
+  return algorithmChoices().find((choice) => choice.key === strategyKey) || NONE_ALGORITHM;
+}
 
-    const x = d3
-      .scaleTime()
-      .domain(d3.extent(rows, (row) => row.date))
-      .range([margin.left, width - margin.right]);
-    const y = d3
-      .scaleLinear()
-      .domain(expandedDomain(d3.extent(rows, (row) => row.equity)))
-      .nice()
-      .range([height - margin.bottom, margin.top]);
-    const positive = rows.at(-1).equity >= rows[0].equity;
-    const color = positive ? "#057a55" : "#b42318";
+function activeAlgorithmKey() {
+  const key = state.controls?.active_strategy || "none";
+  return algorithmChoices().some((choice) => choice.key === key) ? key : "none";
+}
 
-    svg
-      .append("path")
-      .datum(rows)
-      .attr("class", "growth-area")
-      .attr("fill", color)
-      .attr(
-        "d",
-        d3
-          .area()
-          .x((row) => x(row.date))
-          .y0(height - margin.bottom)
-          .y1((row) => y(row.equity))
-          .curve(d3.curveMonotoneX),
-      );
+function activeOptionsKey() {
+  const key = state.controls?.options_strategy || "none";
+  return optionsChoices().some((choice) => choice.key === key) ? key : "none";
+}
 
-    svg
-      .append("path")
-      .datum(rows)
-      .attr("class", "growth-line")
-      .attr("stroke", color)
-      .attr(
-        "d",
-        d3
-          .line()
-          .x((row) => x(row.date))
-          .y((row) => y(row.equity))
-          .curve(d3.curveMonotoneX),
-      );
+function deckClass(offset) {
+  if (offset === 0) return "active";
+  if (offset === -1) return "before";
+  if (offset === 1) return "after";
+  if (offset === 2) return "farAfter";
+  if (offset === -2) return "farBefore";
+  return "hidden";
+}
 
-    svg
-      .append("text")
-      .attr("x", margin.left)
-      .attr("y", height - 4)
-      .attr("class", "chart-label")
-      .text(money(rows[0].equity));
-    svg
-      .append("text")
-      .attr("x", width - margin.right)
-      .attr("y", margin.top + 10)
-      .attr("text-anchor", "end")
-      .attr("class", "chart-label")
-      .text(money(rows.at(-1).equity));
-  }
+function toneClass(index) {
+  return `tone-${index % 5}`;
+}
 
-  function expandedDomain(domain) {
-    const [min, max] = domain;
-    if (min !== max) return domain;
-    const padding = Math.max(Math.abs(min) * 0.01, 1);
-    return [min - padding, max + padding];
-  }
+function isBacktestPayload(payload) {
+  return Boolean(payload && typeof payload === "object" && Array.isArray(payload.rows));
+}
 
-  function renderDca() {
-    syncNodePositions();
-    renderControls();
-    renderBoard();
-  }
-
-  function syncControls() {
-    const plan = state.dca.plan;
-    plan.enabled = $("#dcaEnabled").checked;
-    plan.max_item_amount = MAX_AMOUNT;
-    plan.accumulate.enabled = true;
-    plan.sell.enabled = true;
-    state.controls.algorithm_enabled = $("#algorithmEnabled").checked;
-    state.controls.options_trading_enabled = $("#optionsEnabled").checked;
-    setBucketItems("accumulate", bucketItems("accumulate"));
-    setBucketItems("sell", bucketItems("sell"));
-  }
-
-  function removeSymbol(bucketName, symbol) {
-    setBucketItems(
-      bucketName,
-      bucketItems(bucketName).filter((item) => item.symbol !== symbol),
+function loadStoredBacktests() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(BACKTEST_STORAGE_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, payload]) => isBacktestPayload(payload)),
     );
-    state.nodesById.delete(nodeId(bucketName, symbol));
-    renderDca();
-    showToast(`${symbol} removed`);
+  } catch (_error) {
+    return {};
   }
+}
 
-  function moveAsset(sourceBucket, targetBucket, symbol, amount, point) {
-    const sourceItems = bucketItems(sourceBucket);
-    const index = sourceItems.findIndex((item) => item.symbol === symbol);
-    if (index < 0) return;
-    const [item] = sourceItems.splice(index, 1);
-    const bucket = state.layout.buckets[targetBucket];
-    const radius = itemRadius(amount);
-    const clamped = clampPointToBucket(point, targetBucket, radius);
-    item.amount = clamp(amount, 0, MAX_AMOUNT);
-    item.position = pointToPosition(clamped, bucket, radius);
-    delete item.bucketName;
-    state.dca.plan[targetBucket].items.push(item);
-    setBucketItems("accumulate", bucketItems("accumulate"));
-    setBucketItems("sell", bucketItems("sell"));
+function enabledUniverseSymbols() {
+  return state.universe
+    .filter((row) => row.enabled !== false)
+    .map((row) => row.symbol)
+    .filter(Boolean);
+}
+
+function universeSignature() {
+  return enabledUniverseSymbols().join(",");
+}
+
+function backtestCacheKey(strategyKey) {
+  return `${strategyKey}:${universeSignature()}`;
+}
+
+function hydrateStoredBacktests() {
+  const stored = loadStoredBacktests();
+  const hydrated = {};
+  for (const strategy of algorithmChoices()) {
+    const payload = stored[backtestCacheKey(strategy.key)];
+    if (payload) hydrated[strategy.key] = payload;
   }
+  state.backtests = hydrated;
+}
 
-  async function savePlan(button = null, quiet = false) {
-    syncNodePositions();
-    syncControls();
-    if (button) button.disabled = true;
-    try {
-      const [dcaPayload, controlsPayload] = await Promise.all([
-        api("/api/dca", {
-          method: "POST",
-          body: JSON.stringify({ plan: state.dca.plan }),
-        }),
-        api("/api/controls", {
-          method: "POST",
-          body: JSON.stringify({ controls: state.controls }),
-        }),
-      ]);
-      state.dca = dcaPayload;
-      state.controls = controlsPayload.controls;
-      renderDca();
-      if (!quiet) showToast("Saved");
-    } catch (error) {
-      showToast(error.message);
-    } finally {
-      if (button) button.disabled = false;
+function storedBacktest(strategyKey) {
+  return loadStoredBacktests()[backtestCacheKey(strategyKey)] || null;
+}
+
+function storeBacktest(strategyKey, payload) {
+  if (!isBacktestPayload(payload)) return;
+  try {
+    const cache = loadStoredBacktests();
+    cache[backtestCacheKey(strategyKey)] = {
+      ...payload,
+      browser_cached_at: new Date().toISOString(),
+    };
+    window.localStorage.setItem(BACKTEST_STORAGE_KEY, JSON.stringify(cache));
+  } catch (_error) {
+    // Browser storage is best-effort; the API cache still handles server-side reuse.
+  }
+}
+
+function renderAlgorithmDeck() {
+  const deck = $("#algorithmDeck");
+  if (!deck) return;
+  const choices = algorithmChoices();
+  const activeKey = activeAlgorithmKey();
+  const activeIndex = Math.max(0, choices.findIndex((choice) => choice.key === activeKey));
+  const renderKey = `${activeKey}:${choices.length}`;
+  if (state.renderedAlgorithmDeckKey === renderKey && deck.children.length) {
+    renderAlgorithmSignals();
+    return;
+  }
+  state.renderedAlgorithmDeckKey = renderKey;
+  deck.innerHTML = choices.map((strategy, index) => {
+    const offset = index - activeIndex;
+    const signalPreview = (strategy.signals || []).slice(0, 5);
+    const extraSignalCount = Math.max(0, (strategy.signals || []).length - signalPreview.length);
+    return `
+      <article class="deckCard ${deckClass(offset)} ${toneClass(index)}" data-strategy="${escapeHtml(strategy.key)}" aria-current="${offset === 0 ? "true" : "false"}">
+        <header class="deckHeader">
+          <div>
+            <span class="deckKicker">${offset === 0 ? "Selected" : "Available"}</span>
+            <h2>${escapeHtml(strategy.name)}</h2>
+          </div>
+        </header>
+        <section class="strategyLogic" aria-label="${escapeHtml(strategy.name)} logic">
+          <span>Logic</span>
+          <p>${escapeHtml(strategy.logic)}</p>
+        </section>
+        <section class="strategySignals" aria-label="${escapeHtml(strategy.name)} signals">
+          <span>Signals</span>
+          <ul>
+            ${signalPreview.map((signal) => `<li>${escapeHtml(signal)}</li>`).join("")}
+            ${extraSignalCount ? `<li>+${extraSignalCount} more</li>` : ""}
+          </ul>
+        </section>
+        <div class="strategyMeta">
+          <span>${escapeHtml(strategy.status)}</span>
+          <span>${escapeHtml(strategy.horizon)}</span>
+          <span>${escapeHtml(strategy.risk)}</span>
+        </div>
+      </article>
+    `;
+  }).join("");
+  renderAlgorithmSignals();
+}
+
+async function loadBacktest(strategyKey, refresh, options = {}) {
+  const cacheOnly = Boolean(options.cacheOnly);
+  if (!cacheOnly) state.backtestLoading[strategyKey] = true;
+  if (!cacheOnly && state.backtests[strategyKey]?.error) delete state.backtests[strategyKey];
+  if (!cacheOnly) renderAlgorithmDeck();
+  try {
+    const payload = await api("/api/backtest", {
+      method: "POST",
+      body: JSON.stringify({ strategy: strategyKey, period: BACKTEST_PERIOD, refresh, cache_only: cacheOnly }),
+      timeoutMs: 60000,
+    });
+    if (isBacktestPayload(payload)) {
+      state.backtests[strategyKey] = payload;
+      storeBacktest(strategyKey, payload);
+    } else if (payload?.error) {
+      const fallback = storedBacktest(strategyKey);
+      if (fallback) {
+        state.backtests[strategyKey] = { ...fallback, cached: true, offline_error: payload.error };
+      } else if (!cacheOnly) {
+        state.backtests[strategyKey] = { error: payload.error };
+      }
     }
-  }
-
-  async function loadOptional(path, renderer, fallbackMessage) {
-    try {
-      renderer(await api(path));
-    } catch (error) {
-      fallbackMessage(error);
+  } catch (error) {
+    const fallback = storedBacktest(strategyKey);
+    if (fallback) {
+      state.backtests[strategyKey] = { ...fallback, cached: true, offline_error: error.message };
+    } else if (!cacheOnly) {
+      state.backtests[strategyKey] = { error: error.message };
     }
+  } finally {
+    if (!cacheOnly) state.backtestLoading[strategyKey] = false;
+    if (!cacheOnly) renderAlgorithmDeck();
+    renderAlgorithmSignals();
   }
+}
 
-  async function loadAll() {
-    state.status = await api("/api/status");
-    state.universe = (await api("/api/universe")).rows || [];
-    state.dca = await api("/api/dca");
-    state.controls = (await api("/api/controls")).controls;
+async function recommendUniverse() {
+  state.universeRefreshing = true;
+  renderAlgorithmSignals();
+  try {
+    const payload = await api("/api/universe/recommend", {
+      method: "POST",
+      body: JSON.stringify({ refresh: true, max_symbols: 12 }),
+      timeoutMs: 90000,
+    });
+    state.universeProposal = payload;
+    showToast(`${(payload.rows || []).length} symbols proposed`);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.universeRefreshing = false;
+    renderAlgorithmSignals();
+  }
+}
+
+async function applyUniverseProposal() {
+  const rows = state.universeProposal?.rows || [];
+  if (!rows.length || state.universeApplying) return;
+  state.universeApplying = true;
+  renderAlgorithmSignals();
+  try {
+    const payload = await api("/api/universe/apply", {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+      timeoutMs: 15000,
+    });
+    state.universe = payload.universe?.rows || state.universe;
+    state.universeProposal = null;
+    state.signals = {};
+    state.backtests = {};
+    const dcaPayload = await api("/api/dca", { timeoutMs: 5000 });
+    state.dca = dcaPayload;
     state.dca.plan.max_item_amount = MAX_AMOUNT;
+    hydrateStoredBacktests();
     renderDca();
+    renderAlgorithmDeck();
+    loadSignals(activeAlgorithmKey());
+    loadCachedBacktestsForDeck();
+    showToast("Universe applied");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.universeApplying = false;
+    renderAlgorithmSignals();
+  }
+}
 
-    await loadOptional(
-      "/api/account",
-      (payload) => {
-        state.account = payload;
-        renderAccount();
-      },
-      (error) => {
-        $("#positionsBody").innerHTML = `<tr><td colspan="4">${escapeHtml(error.message)}</td></tr>`;
-      },
-    );
-    await loadOptional(
-      "/api/portfolio-history",
-      (payload) => {
-        state.historyPayload = payload;
-        renderGrowthChart(payload);
-      },
-      (error) => {
-        d3.select("#growthChart").selectAll("*").remove();
-        d3.select("#growthChart")
-          .append("text")
-          .attr("x", 20)
-          .attr("y", 28)
-          .attr("class", "empty-chart")
-          .text(error.message);
-      },
-    );
-    await loadOptional("/api/open-orders", renderOrders, (error) => {
-      const tbody = $("#ordersBody");
-      if (tbody) tbody.innerHTML = `<tr><td colspan="4">${escapeHtml(error.message)}</td></tr>`;
+async function loadCachedBacktestsForDeck() {
+  const keys = algorithmChoices().map((strategy) => strategy.key);
+  for (const strategyKey of keys) {
+    if (!state.backtests[strategyKey] && !state.backtestLoading[strategyKey]) {
+      await loadBacktest(strategyKey, false, { cacheOnly: true });
+    }
+  }
+}
+
+async function ensureSignals(strategyKey) {
+  if (state.signals[strategyKey] || state.signalLoading[strategyKey]) return;
+  await loadSignals(strategyKey);
+}
+
+async function loadSignals(strategyKey) {
+  state.signalLoading[strategyKey] = true;
+  renderAlgorithmSignals();
+  try {
+    state.signals[strategyKey] = await api(`/api/strategy-signals?strategy=${encodeURIComponent(strategyKey)}`, {
+      timeoutMs: 60000,
     });
+  } catch (error) {
+    state.signals[strategyKey] = { error: error.message };
+  } finally {
+    state.signalLoading[strategyKey] = false;
+    renderAlgorithmSignals();
+  }
+}
+
+function formatSignalDetail(strategyKey, row) {
+  if (row.reason) {
+    const close = row.close ? ` / Close ${money(row.close, 2)}` : "";
+    return `${row.reason}${close}`;
+  }
+  if (strategyKey === "momentum_social") {
+    return `Price ${num(row.price_score, 2)} / Social ${num(row.social_score, 2)} / Volume ${num(row.volume_score, 2)}`;
+  }
+  if (strategyKey === "none") {
+    return `Weight ${percent(row.target_weight)} / ${row.trend_ok ? "Enabled" : "Inactive"}`;
+  }
+  if (row.close) {
+    return `Close ${money(row.close, 2)}`;
+  }
+  return "Live feed pending";
+}
+
+function backtestStatusLabel(backtest, loading) {
+  if (loading) return "Refreshing";
+  if (backtest?.error) return "Error";
+  if (isBacktestPayload(backtest)) return backtest.cached ? "Cached" : "Fresh";
+  return "Pending";
+}
+
+function backtestCaptionText(backtest, loading) {
+  if (backtest?.error) return backtest.error;
+  if (isBacktestPayload(backtest)) {
+    return "";
+  }
+  return loading ? `Refreshing ${BACKTEST_LABEL} backtest...` : `No ${BACKTEST_LABEL} backtest yet.`;
+}
+
+function backtestEquityText(backtest) {
+  if (!isBacktestPayload(backtest)) return "";
+  return `Ending equity = ${money(backtest.ending_cash)} cash + ${money(backtest.ending_invested)} holdings / ${percent(backtest.total_return)}`;
+}
+
+function backtestOrderText(backtest) {
+  if (!isBacktestPayload(backtest) || !backtest.orders) return "";
+  const orders = backtest.orders;
+  const planned = Number(orders.planned_order_value || 0);
+  const traded = Number(orders.total_order_value || 0);
+  const skipped = Number(orders.skipped_order_value || 0);
+  const peakInvested = Number(orders.max_capital_at_work ?? orders.max_gross_exposure ?? 0);
+  const cashCap = Number(orders.capital_limit || backtest.starting_equity || 0);
+  const plannedText = planned > traded + 0.01
+    ? ` / ${money(planned)} planned / ${money(skipped)} skipped`
+    : "";
+  const tradingLabel = backtest.source === "dca" ? "filled" : "cumulative turnover";
+  const peakText = cashCap
+    ? ` / peak invested ${money(peakInvested)} of ${money(cashCap)} cap`
+    : ` / peak invested ${money(peakInvested)}`;
+  return `${Number(orders.total_orders || 0)} orders / ${money(traded)} ${tradingLabel}${plannedText}${peakText} / max exposure ${percent(orders.max_gross_exposure_pct)}`;
+}
+
+function renderUniverseReview() {
+  const proposal = state.universeProposal;
+  const currentSymbols = enabledUniverseSymbols();
+  const rows = proposal?.rows || [];
+  const rejectedCount = Number(proposal?.rejected?.length || 0);
+  const status = state.universeRefreshing
+    ? "Refreshing"
+    : proposal
+      ? `${rows.length}/${proposal.eligible_count || rows.length}`
+      : `${currentSymbols.length} active`;
+  return `
+    <section class="universeReview" aria-label="Algorithm universe">
+      <div class="cachedBacktestHeader">
+        <span>Universe</span>
+        <strong>${escapeHtml(status)}</strong>
+      </div>
+      ${proposal
+      ? `
+        <div class="universeRows">
+          ${rows.map((row) => `
+            <article>
+              <strong>${escapeHtml(row.symbol)}</strong>
+              <span>${escapeHtml(row.bucket || "")}</span>
+              <span>${escapeHtml(row.latest_bar || "")} / ${money(row.avg_dollar_volume, 0)}</span>
+            </article>
+          `).join("") || "<p>No proposal</p>"}
+        </div>
+        <div class="universeMeta">
+          <span>${escapeHtml(proposal.data_feed || "feed")}</span>
+          <span>${rejectedCount} filtered</span>
+        </div>
+        <button class="applyUniverse" type="button" data-apply-universe ${state.universeApplying || !rows.length ? 'disabled aria-busy="true"' : ""}>Apply</button>
+      `
+      : `
+        <div class="universeChips">
+          ${currentSymbols.map((symbol) => `<span>${escapeHtml(symbol)}</span>`).join("")}
+        </div>
+      `}
+    </section>
+  `;
+}
+
+function renderAlgorithmSignals() {
+  const card = $("#algorithmSignalCard");
+  if (!card) return;
+  const activeKey = activeAlgorithmKey();
+  const selected = strategyByKey(activeKey);
+  const payload = state.signals[activeKey];
+  const backtest = state.backtests[activeKey];
+  const loading = Boolean(state.signalLoading[activeKey]);
+  const backtestLoading = Boolean(state.backtestLoading[activeKey]);
+  const signalInputs = (selected.signals || []).slice(0, 5);
+  const backtestCaption = backtestCaptionText(backtest, backtestLoading);
+  const equityCaption = backtestEquityText(backtest);
+  const orderCaption = backtestOrderText(backtest);
+  const refreshAttrs = backtestLoading ? 'disabled aria-busy="true"' : "";
+  const universeAttrs = state.universeRefreshing ? 'disabled aria-busy="true"' : "";
+  const allLeaders = payload?.leaders || [];
+  const activeLeaders = allLeaders.filter((row) => (row.side === "LONG" || row.side === "SHORT" || row.signal === "LONG" || row.signal === "SHORT"));
+  const inactiveLeaders = allLeaders.filter((row) => !activeLeaders.includes(row));
+  const visibleLeaders = [...activeLeaders, ...inactiveLeaders];
+  card.innerHTML = `
+    <header class="signalHeader">
+      <div>
+        <span class="deckKicker">Position Signals</span>
+      </div>
+      <div class="signalActions">
+        <button class="refreshUniverse" type="button" data-refresh-universe ${universeAttrs}>Universe</button>
+        <button class="refreshBacktest" type="button" data-refresh-backtest="${escapeHtml(activeKey)}" ${refreshAttrs}>Backtest</button>
+      </div>
+    </header>
+    <div class="signalBody">
+      <div class="signalRows">
+        ${loading
+      ? "<p>Fetching live signal snapshot.</p>"
+      : payload?.error
+        ? `<p>${escapeHtml(payload.error)}</p>`
+        : visibleLeaders.length
+          ? visibleLeaders.map((row) => `
+            <article>
+              <strong>${escapeHtml(row.symbol)}</strong>
+              <span>${escapeHtml(row.side || row.signal)} / Score ${num(row.score, 2)} / Weight ${percent(row.target_weight)}</span>
+              <span>${escapeHtml(formatSignalDetail(activeKey, row))}</span>
+            </article>
+          `).join("")
+          : renderSignalFallbackRows(selected, payload, signalInputs)
+    }
+      </div>
+      <section class="cachedBacktest" aria-label="Cached ${BACKTEST_LABEL} backtest">
+        <div class="cachedBacktestHeader">
+          <span>${BACKTEST_LABEL} Backtest</span>
+          <strong>${escapeHtml(backtestStatusLabel(backtest, backtestLoading))}</strong>
+        </div>
+        <svg class="deckChart" id="activeBacktestChart" role="img" aria-label="${BACKTEST_LABEL} backtest chart"></svg>
+        ${backtestCaption ? `<p>${escapeHtml(backtestCaption)}</p>` : ""}
+        ${equityCaption ? `<p>${escapeHtml(equityCaption)}</p>` : ""}
+        ${orderCaption ? `<p>${escapeHtml(orderCaption)}</p>` : ""}
+        ${backtest?.offline_error ? `<p>${escapeHtml(backtest.offline_error)}</p>` : ""}
+      </section>
+    </div>
+  `;
+  renderBacktestChart(backtest, $("#activeBacktestChart"));
+}
+
+function renderSignalFallbackRows(selected, payload, signalInputs) {
+  const isTemplate = payload?.wired === false;
+  const heading = isTemplate ? "Template signal model" : "No active live rows";
+  const detail = isTemplate
+    ? "Signal inputs are shown until this strategy is wired to live market rows."
+    : payload
+      ? "No symbols currently meet the live criteria; signal inputs are shown below."
+      : "Waiting for the first live snapshot.";
+  const inputs = signalInputs.length ? signalInputs : [selected.logic || "Signal configuration pending"];
+  return `
+    <article class="signalFallback">
+      <strong>${escapeHtml(heading)}</strong>
+      <span>${escapeHtml(detail)}</span>
+    </article>
+    ${inputs.map((signal) => `
+      <article>
+        <strong>${escapeHtml(signal)}</strong>
+        <span>${isTemplate ? "Template input" : "Signal input"}</span>
+      </article>
+    `).join("")}
+  `;
+}
+
+async function selectAlgorithmStrategy(strategyKey) {
+  if (strategyKey === activeAlgorithmKey()) return;
+  state.controls.active_strategy = strategyKey;
+  state.controls.backtest_strategy = strategyKey;
+  if (strategyKey === "none") state.controls.algorithm_enabled = false;
+  if (strategyKey === "none") state.controls.algorithm_power_confirmed = false;
+  renderAlgorithmDeck();
+  renderAlgorithmPower();
+  const savePromise = saveControlsOnly({ renderDecks: false });
+  await Promise.all([savePromise, ensureSignals(strategyKey)]);
+}
+
+function canShiftDeck() {
+  if (state.deckWheelLocked) return false;
+  state.deckWheelLocked = true;
+  window.setTimeout(() => {
+    state.deckWheelLocked = false;
+  }, 760);
+  return true;
+}
+
+function shiftAlgorithmDeck(direction) {
+  const choices = algorithmChoices();
+  const index = Math.max(0, choices.findIndex((choice) => choice.key === activeAlgorithmKey()));
+  const nextIndex = clamp(index + direction, 0, choices.length - 1);
+  if (nextIndex === index) return; // at ends, no movement or animation
+  if (!canShiftDeck()) return;
+  const deck = $("#algorithmDeck");
+  if (deck) deck.setAttribute("data-shift", direction > 0 ? "down" : "up");
+  selectRelativeAlgorithm(direction);
+  if (deck) window.setTimeout(() => deck.removeAttribute("data-shift"), 760);
+}
+
+function selectRelativeAlgorithm(direction) {
+  const choices = algorithmChoices();
+  const index = Math.max(0, choices.findIndex((choice) => choice.key === activeAlgorithmKey()));
+  const nextIndex = clamp(index + direction, 0, choices.length - 1);
+  const next = choices[nextIndex];
+  if (next && next.key !== activeAlgorithmKey()) selectAlgorithmStrategy(next.key);
+}
+
+function renderOptionsDeck() {
+  const deck = $("#optionsDeck");
+  if (!deck) return;
+  const choices = optionsChoices();
+  const activeKey = activeOptionsKey();
+  const activeIndex = Math.max(0, choices.findIndex((choice) => choice.key === activeKey));
+  const renderKey = `${activeKey}:${choices.length}`;
+  if (state.renderedOptionsDeckKey === renderKey && deck.children.length) {
+    renderOptionsInsight();
+    return;
+  }
+  state.renderedOptionsDeckKey = renderKey;
+  deck.innerHTML = choices.map((strategy, index) => {
+    const offset = index - activeIndex;
+    return `
+      <article class="deckCard optionsDeckCard ${deckClass(offset)} ${toneClass(index + 2)}" data-options-strategy="${escapeHtml(strategy.key)}" aria-current="${offset === 0 ? "true" : "false"}">
+        <header class="deckHeader">
+          <div>
+            <span class="deckKicker">${offset === 0 ? "Active" : "Available"}</span>
+            <h2>${escapeHtml(strategy.name)}</h2>
+          </div>
+        </header>
+        <p>${escapeHtml(strategy.description)}</p>
+        <div class="strategyMeta">
+          <span>${escapeHtml(strategy.risk)}</span>
+          ${strategy.config.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+        </div>
+      </article>
+    `;
+  }).join("");
+  renderOptionsInsight();
+}
+
+async function selectOptionsStrategy(strategyKey) {
+  if (strategyKey === activeOptionsKey()) return;
+  state.controls.options_strategy = strategyKey;
+  state.controls.options_trading_enabled = strategyKey !== "none";
+  renderOptionsDeck();
+  await saveControlsOnly({ renderDecks: false });
+}
+
+function shiftOptionsDeck(direction) {
+  const choices = optionsChoices();
+  const index = Math.max(0, choices.findIndex((choice) => choice.key === activeOptionsKey()));
+  const nextIndex = clamp(index + direction, 0, choices.length - 1);
+  if (nextIndex === index) return; // at ends, no movement or animation
+  if (!canShiftDeck()) return;
+  const deck = $("#optionsDeck");
+  if (deck) deck.setAttribute("data-shift", direction > 0 ? "down" : "up");
+  selectRelativeOptions(direction);
+  if (deck) window.setTimeout(() => deck.removeAttribute("data-shift"), 760);
+}
+
+function selectRelativeOptions(direction) {
+  const choices = optionsChoices();
+  const index = Math.max(0, choices.findIndex((choice) => choice.key === activeOptionsKey()));
+  const nextIndex = clamp(index + direction, 0, choices.length - 1);
+  const next = choices[nextIndex];
+  if (next && next.key !== activeOptionsKey()) selectOptionsStrategy(next.key);
+}
+
+function renderOptionsInsight() {
+  const card = $("#optionsSignalCard");
+  if (!card) return;
+  const selected = optionsChoices().find((choice) => choice.key === activeOptionsKey()) || NONE_OPTIONS;
+  card.innerHTML = `
+    <span class="deckKicker">Options Setup</span>
+    <h2>${escapeHtml(selected.name)}</h2>
+    <p>${escapeHtml(selected.description)}</p>
+    <div class="signalRows">
+      ${(selected.config || []).map((item) => `
+        <article>
+          <strong>${escapeHtml(item)}</strong>
+          <span>${selected.key === "none" ? "Inactive" : "Review before enabling"}</span>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function updateFeatureToggles() {
+  const enabled = isDcaEnabled();
+  const button = $("#scheduleToggle");
+  const panel = $("#schedulePanel");
+  if (button) {
+    button.setAttribute("aria-pressed", String(enabled));
+    button.classList.toggle("on", enabled);
+    button.innerHTML = '<span aria-hidden="true">&#9211;</span>';
+  }
+  if (panel) panel.classList.toggle("is-on", enabled);
+}
+
+function renderAlgorithmPower() {
+  const enabled = Boolean(state.controls?.algorithm_enabled) && activeAlgorithmKey() !== "none";
+  const button = $("#algorithmPowerToggle");
+  const panel = $("#algorithmRunPanel");
+  const select = $("#tradingAccount");
+  if (button) {
+    button.setAttribute("aria-pressed", String(enabled));
+    button.classList.toggle("on", enabled);
+    button.disabled = activeAlgorithmKey() === "none";
+    button.innerHTML = '<span aria-hidden="true">&#9211;</span>';
+  }
+  if (panel) panel.classList.toggle("is-on", enabled);
+  if (select) {
+    const accounts = state.accounts.length
+      ? state.accounts
+      : [{ id: state.controls?.trading_account_id || "default", label: "Default" }];
+    const activeAccount = state.controls?.trading_account_id || accounts[0]?.id || "";
+    select.innerHTML = accounts.map((account) => `
+      <option value="${escapeHtml(account.id)}"${account.id === activeAccount ? " selected" : ""}>
+        ${escapeHtml(account.label || account.id)}
+      </option>
+    `).join("");
+    select.disabled = enabled;
+  }
+}
+
+function renderBacktestChart(payload, svg) {
+  if (!svg) return;
+  const width = svg.clientWidth || 860;
+  const height = svg.clientHeight || 260;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.replaceChildren();
+  if (!payload || payload.error) {
+    svg.appendChild(textEl({ x: width / 2, y: height / 2, "text-anchor": "middle", class: "empty-chart" }, payload?.error ? "Backtest unavailable" : "Backtest pending"));
+    return;
+  }
+  const rows = (payload?.rows || [])
+    .map((row) => ({
+      date: new Date(row.timestamp),
+      equity: Number(row.equity),
+      invested: Number(row.invested ?? row.gross_exposure ?? 0),
+      cash: Number(row.cash ?? 0),
+      dcaContributions: Number(row.dca_contributions ?? 0),
+    }))
+    .filter((row) => Number.isFinite(row.equity) && !Number.isNaN(row.date.getTime()));
+  if (rows.length < 2) {
+    svg.appendChild(textEl({ x: width / 2, y: height / 2, "text-anchor": "middle", class: "empty-chart" }, `No ${BACKTEST_LABEL} rows`));
+    return;
   }
 
-  function wireEvents() {
-    $("#dcaEnabled").addEventListener("change", () => {
-      state.dca.plan.enabled = $("#dcaEnabled").checked;
-      renderDca();
-      savePlan(null, true);
-    });
-    $("#algorithmEnabled").addEventListener("change", () => {
-      state.controls.algorithm_enabled = $("#algorithmEnabled").checked;
-      savePlan(null, true);
-    });
-    $("#optionsEnabled").addEventListener("change", () => {
-      state.controls.options_trading_enabled = $("#optionsEnabled").checked;
-      savePlan(null, true);
-    });
-    $("#symbolEntry").addEventListener("keydown", (event) => {
-      if (event.key === "Enter") commitSymbolEntry();
-      if (event.key === "Escape") hideSymbolEntry();
-    });
-    $("#symbolEntry").addEventListener("blur", () => window.setTimeout(commitSymbolEntry, 80));
-    window.addEventListener("resize", () => {
-      syncNodePositions();
-      renderBoard();
-      if (state.historyPayload) renderGrowthChart(state.historyPayload);
-    });
-  }
+  const left = 16;
+  const right = 25;
+  const top = 42;
+  const bottom = 24;
+  const valueLabelY = 16;
+  const minX = Math.min(...rows.map((row) => row.date.getTime()));
+  const maxX = Math.max(...rows.map((row) => row.date.getTime()));
+  const minY = Math.min(...rows.map((row) => row.equity));
+  const maxY = Math.max(...rows.map((row) => row.equity));
+  const padY = Math.max((maxY - minY) * 0.1, Math.abs(maxY) * 0.01, 1);
+  const xScale = (date) => left + ((date.getTime() - minX) / Math.max(maxX - minX, 1)) * (width - left - right);
+  const yScale = (equity) => height - bottom - ((equity - minY + padY) / Math.max(maxY - minY + padY * 2, 1)) * (height - top - bottom);
+  const path = rows.map((row, index) => `${index ? "L" : "M"} ${xScale(row.date).toFixed(1)} ${yScale(row.equity).toFixed(1)}`).join(" ");
+  const color = rows.at(-1).equity >= rows[0].equity ? "#057a55" : "#b42318";
+  const axisY = height - bottom;
+  svg.appendChild(svgEl("line", { class: "axis-line", x1: left, y1: axisY, x2: width - right, y2: axisY }));
+  dateTicks(rows, 3).forEach((row) => {
+    const xRaw = xScale(row.date);
+    // keep tick labels inside the chart area to avoid overflow at the edges
+    const x = Math.min(Math.max(xRaw, left + 12), width - right - 12);
+    svg.appendChild(svgEl("line", { class: "axis-line", x1: x, y1: axisY, x2: x, y2: axisY + 4 }));
+    svg.appendChild(textEl({ x, y: height - 6, "text-anchor": "middle", class: "axis-label" }, formatDateTick(row.date, 4)));
+  });
+  svg.appendChild(svgEl("path", { class: "growth-line", stroke: color, d: path }));
+  svg.appendChild(textEl({ x: left, y: valueLabelY, class: "chart-label" }, money(rows[0].equity)));
+  svg.appendChild(textEl({ x: width - right, y: valueLabelY, "text-anchor": "end", class: "chart-label" }, money(rows.at(-1).equity)));
+  addBacktestChartHover(svg, rows, { width, height, left, right, top, bottom, xScale, yScale });
+}
 
-  async function init() {
-    if (!window.d3) {
-      showToast("D3 failed to load. Check internet access for the CDN.");
+function addBacktestChartHover(svg, rows, chart) {
+  const overlay = svgEl("rect", {
+    class: "chart-hitbox",
+    x: chart.left,
+    y: chart.top,
+    width: Math.max(chart.width - chart.left - chart.right, 1),
+    height: Math.max(chart.height - chart.top - chart.bottom, 1),
+  });
+  const layer = svgEl("g", { class: "chart-hover-layer", visibility: "hidden" });
+  const vertical = svgEl("line", { class: "chart-crosshair" });
+  const horizontal = svgEl("line", { class: "chart-crosshair" });
+  const point = svgEl("circle", { class: "chart-hover-point", r: 4 });
+  const box = svgEl("rect", { class: "chart-tooltip-bg", rx: 6, ry: 6, width: 154, height: 72 });
+  const dateText = textEl({ class: "chart-tooltip-title" }, "");
+  const equityText = textEl({ class: "chart-tooltip-text" }, "");
+  const investedText = textEl({ class: "chart-tooltip-text" }, "");
+  const cashText = textEl({ class: "chart-tooltip-text" }, "");
+  [vertical, horizontal, point, box, dateText, equityText, investedText, cashText].forEach((node) => {
+    layer.appendChild(node);
+  });
+  svg.appendChild(layer);
+  svg.appendChild(overlay);
+
+  const timestamps = rows.map((row) => row.date.getTime());
+  const minX = Math.min(...timestamps);
+  const maxX = Math.max(...timestamps);
+  const toSvgPoint = (event) => {
+    const rect = svg.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / Math.max(rect.width, 1)) * chart.width,
+      y: ((event.clientY - rect.top) / Math.max(rect.height, 1)) * chart.height,
+    };
+  };
+  const nearestRow = (x) => {
+    const ratio = clamp((x - chart.left) / Math.max(chart.width - chart.left - chart.right, 1), 0, 1);
+    const target = minX + ratio * Math.max(maxX - minX, 1);
+    let best = rows[0];
+    let bestDistance = Math.abs(best.date.getTime() - target);
+    rows.forEach((row) => {
+      const distance = Math.abs(row.date.getTime() - target);
+      if (distance < bestDistance) {
+        best = row;
+        bestDistance = distance;
+      }
+    });
+    return best;
+  };
+  const positionText = (text, x, y) => {
+    text.setAttribute("x", x);
+    text.setAttribute("y", y);
+  };
+
+  overlay.addEventListener("pointermove", (event) => {
+    const pointInSvg = toSvgPoint(event);
+    const row = nearestRow(pointInSvg.x);
+    const x = chart.xScale(row.date);
+    const y = chart.yScale(row.equity);
+    const tooltipWidth = 154;
+    const tooltipHeight = 72;
+    const tooltipX = x + tooltipWidth + 12 > chart.width ? x - tooltipWidth - 10 : x + 10;
+    const tooltipY = Math.min(Math.max(y - tooltipHeight / 2, chart.top), chart.height - chart.bottom - tooltipHeight);
+    vertical.setAttribute("x1", x);
+    vertical.setAttribute("x2", x);
+    vertical.setAttribute("y1", chart.top);
+    vertical.setAttribute("y2", chart.height - chart.bottom);
+    horizontal.setAttribute("x1", chart.left);
+    horizontal.setAttribute("x2", chart.width - chart.right);
+    horizontal.setAttribute("y1", y);
+    horizontal.setAttribute("y2", y);
+    point.setAttribute("cx", x);
+    point.setAttribute("cy", y);
+    box.setAttribute("x", tooltipX);
+    box.setAttribute("y", tooltipY);
+    dateText.textContent = row.date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    equityText.textContent = `Equity ${money(row.equity)}`;
+    investedText.textContent = `Invested ${money(row.invested)}`;
+    cashText.textContent = `Cash ${money(row.cash)}`;
+    positionText(dateText, tooltipX + 10, tooltipY + 17);
+    positionText(equityText, tooltipX + 10, tooltipY + 34);
+    positionText(investedText, tooltipX + 10, tooltipY + 50);
+    positionText(cashText, tooltipX + 10, tooltipY + 66);
+    layer.setAttribute("visibility", "visible");
+  });
+  overlay.addEventListener("pointerleave", () => {
+    layer.setAttribute("visibility", "hidden");
+  });
+}
+
+function activateAlgorithmView() {
+  renderAlgorithmDeck();
+  const activeKey = activeAlgorithmKey();
+  ensureSignals(activeKey);
+}
+
+function percent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function renderScheduleDescription() {
+  const pattern = $("#cronPattern").value.trim();
+  const descriptions = {
+    "0 12 * * 1-5": "Weekdays at 12:00 PM",
+    "0 9 * * 1-5": "Weekdays at 9:00 AM",
+    "0 12 * * 1": "Mondays at 12:00 PM",
+    "0 12 1 * *": "First day monthly at 12:00 PM",
+  };
+  $("#cronDescription").textContent = descriptions[pattern] || "Cron-style schedule pattern";
+}
+
+function switchTab(tabName) {
+  document.querySelectorAll(".tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === tabName);
+  });
+  document.querySelectorAll(".tabPanel").forEach((panel) => {
+    panel.classList.toggle("active", panel.id === `${tabName}Tab`);
+  });
+  if (tabName === "dca") renderDca();
+  if (tabName === "algorithm") activateAlgorithmView();
+  if (tabName === "options") renderOptionsDeck();
+}
+
+async function savePlan(quiet = true) {
+  if (!state.dca?.plan) return;
+  syncNodesToPlan();
+  state.dca.plan.schedule_pattern = $("#cronPattern").value.trim() || "0 12 * * 1-5";
+  try {
+    const [dcaPayload, controlsPayload] = await Promise.all([
+      api("/api/dca", { method: "POST", body: JSON.stringify({ plan: state.dca.plan }), timeoutMs: 5000 }),
+      api("/api/controls", { method: "POST", body: JSON.stringify({ controls: state.controls }), timeoutMs: 5000 }),
+    ]);
+    state.dca = dcaPayload;
+    state.controls = controlsPayload.controls;
+    delete state.backtests.none;
+    delete state.signals.none;
+    renderDca();
+    if (!quiet) showToast("Saved");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function saveControlsOnly(options = {}) {
+  const renderDecks = options.renderDecks !== false;
+  try {
+    const payload = await api("/api/controls", {
+      method: "POST",
+      body: JSON.stringify({ controls: state.controls }),
+      timeoutMs: 5000,
+    });
+    state.controls = payload.controls;
+    state.accounts = payload.accounts || state.accounts;
+    state.bot = payload.bot || state.bot;
+    updateFeatureToggles();
+    renderAlgorithmPower();
+    if (renderDecks) {
+      renderAlgorithmDeck();
+      renderOptionsDeck();
+    } else {
+      renderAlgorithmSignals();
+      renderOptionsInsight();
+    }
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function wireEvents() {
+  document.querySelectorAll(".tab").forEach((button) => {
+    button.addEventListener("click", () => switchTab(button.dataset.tab));
+  });
+  $("#algorithmDeck")?.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-strategy]");
+    if (card) selectAlgorithmStrategy(card.dataset.strategy);
+  });
+  $("#algorithmSignalCard")?.addEventListener("click", (event) => {
+    const universeButton = event.target.closest("[data-refresh-universe]");
+    if (universeButton) {
+      recommendUniverse();
       return;
     }
-    wireEvents();
-    try {
-      await loadAll();
-    } catch (error) {
-      showToast(error.message);
+    const applyUniverseButton = event.target.closest("[data-apply-universe]");
+    if (applyUniverseButton) {
+      applyUniverseProposal();
+      return;
     }
-  }
+    const refreshButton = event.target.closest("[data-refresh-backtest]");
+    if (!refreshButton) return;
+    const strategyKey = refreshButton.dataset.refreshBacktest;
+    delete state.signals[strategyKey];
+    loadSignals(strategyKey);
+    loadBacktest(strategyKey, true);
+  });
+  $("#algorithmDeck")?.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    shiftAlgorithmDeck(event.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
+  $("#algorithmDeck")?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") selectRelativeAlgorithm(1);
+    if (event.key === "ArrowUp") selectRelativeAlgorithm(-1);
+  });
+  $("#optionsDeck")?.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-options-strategy]");
+    if (card) selectOptionsStrategy(card.dataset.optionsStrategy);
+  });
+  $("#optionsDeck")?.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    shiftOptionsDeck(event.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
+  $("#optionsDeck")?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") selectRelativeOptions(1);
+    if (event.key === "ArrowUp") selectRelativeOptions(-1);
+  });
+  $("#scheduleToggle")?.addEventListener("click", () => {
+    if (!state.dca?.plan) return;
+    state.dca.plan.enabled = !state.dca.plan.enabled;
+    renderDca();
+    savePlan();
+  });
+  $("#algorithmPowerToggle")?.addEventListener("click", () => {
+    if (activeAlgorithmKey() === "none") {
+      state.controls.algorithm_enabled = false;
+      state.controls.algorithm_power_confirmed = false;
+      renderAlgorithmPower();
+      return;
+    }
+    state.controls.algorithm_enabled = !state.controls.algorithm_enabled;
+    state.controls.algorithm_power_confirmed = state.controls.algorithm_enabled;
+    renderAlgorithmPower();
+    saveControlsOnly({ renderDecks: false });
+  });
+  $("#tradingAccount")?.addEventListener("change", (event) => {
+    state.controls.trading_account_id = event.target.value;
+    renderAlgorithmPower();
+    saveControlsOnly({ renderDecks: false });
+  });
+  $("#cronPattern")?.addEventListener("input", renderScheduleDescription);
+  $("#cronPattern")?.addEventListener("change", () => savePlan());
+  $("#symbolEntry")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") commitSymbolEntry();
+    if (event.key === "Escape") hideSymbolEntry();
+  });
+  $("#symbolEntry")?.addEventListener("input", () => {
+    if (!state.draft) return;
+    state.draft.symbol = $("#symbolEntry").value.trim().toUpperCase().slice(0, 6);
+    renderBoard();
+  });
+  $("#symbolEntry")?.addEventListener("blur", () => window.setTimeout(commitSymbolEntry, 80));
+  document.querySelectorAll(".deckArrow").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const target = event.currentTarget;
+      const direction = Number(target.dataset.direction || 0);
+      if (target.dataset.deck === "algorithm") shiftAlgorithmDeck(direction);
+      if (target.dataset.deck === "options") shiftOptionsDeck(direction);
+    });
+  });
+  window.addEventListener("resize", () => {
+    renderDca();
+  });
+  // Allow keyboard delete/backspace to remove the currently selected bubble
+  window.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const tag = target && target.tagName && target.tagName.toLowerCase();
+    if (tag === "input" || tag === "textarea" || target.isContentEditable) return;
+    if ((event.key === "Delete" || event.key === "Backspace") && state.selected) {
+      // find the bucket that contains the selected symbol
+      const fromItems = BUCKET_NAMES.flatMap((bucketName) =>
+        bucketItems(bucketName).map((item) => ({ bucketName, item })),
+      );
+      const found = fromItems.find(({ item }) => item.symbol === state.selected);
+      if (found) {
+        removeSymbol(found.bucketName, state.selected);
+        state.selected = null;
+        return;
+      }
+      // fallback: if plan not yet loaded or item not found in plan, remove from rendered nodes
+      const nodeIndex = state.nodes.findIndex((n) => n.symbol === state.selected);
+      if (nodeIndex !== -1) {
+        state.nodes.splice(nodeIndex, 1);
+        state.selected = null;
+        renderBoard();
+      }
+    }
+  });
+}
 
-  init();
+async function init() {
+  wireEvents();
+  renderAlgorithmDeck();
+  renderOptionsDeck();
+  renderStaticBubbles();
+  try {
+    const [statusPayload, universePayload, dcaPayload, controlsPayload] = await Promise.all([
+      api("/api/status", { timeoutMs: 5000 }),
+      api("/api/universe", { timeoutMs: 5000 }),
+      api("/api/dca", { timeoutMs: 5000 }),
+      api("/api/controls", { timeoutMs: 5000 }),
+    ]);
+    state.status = statusPayload;
+    state.universe = universePayload.rows || [];
+    state.dca = dcaPayload;
+    state.controls = controlsPayload.controls || state.controls;
+    state.accounts = controlsPayload.accounts || [];
+    state.bot = controlsPayload.bot || statusPayload.bot || null;
+    state.dca.plan.max_item_amount = MAX_AMOUNT;
+    hydrateStoredBacktests();
+    renderDca();
+    renderAlgorithmDeck();
+    loadCachedBacktestsForDeck();
+  } catch (error) {
+    showToast(`Could not load DCA data: ${error.message}`);
+    return;
+  }
+}
+
+function renderStaticBubbles() {
+  calculateLayout();
+  const svg = $("#bubbleBoard");
+  svg.setAttribute("viewBox", `0 0 ${state.layout.width} ${state.layout.height}`);
+  svg.replaceChildren();
+  BUCKET_NAMES.forEach((bucketName) => {
+    const bucket = state.layout.buckets[bucketName];
+    const color = DISABLED_COLORS[bucketName];
+    svg.appendChild(svgEl("circle", {
+      class: `bucket-blob ${bucketName}`,
+      cx: bucket.cx,
+      cy: bucket.cy,
+      r: bucket.r,
+      fill: color,
+      stroke: shadeColor(color, -30),
+    }));
+    svg.appendChild(textEl({
+      class: "bucket-label",
+      x: bucket.cx,
+      y: bucket.cy,
+      "text-anchor": "middle",
+      fill: color,
+    }, bucket.label));
+  });
+}
+
+function shadeColor(color, percent) {
+  const parsed = color.replace("#", "");
+  const number = parseInt(parsed, 16);
+  const amount = Math.round(2.55 * percent);
+  const red = clamp((number >> 16) + amount, 0, 255);
+  const green = clamp(((number >> 8) & 0xff) + amount, 0, 255);
+  const blue = clamp((number & 0xff) + amount, 0, 255);
+  return `#${(0x1000000 + red * 0x10000 + green * 0x100 + blue).toString(16).slice(1)}`;
+}
+
+init();

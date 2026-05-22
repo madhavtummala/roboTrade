@@ -1,8 +1,15 @@
 .env
+.env.*
+!.env.example
 .venv/
 .pytest_cache/
 __pycache__/
 *.py[cod]
 logs/
+runtime/
+config/
 data/social_trends.csv
 data/dca_plan.json
+data/backtest_cache.json
+data/trading_bot.sqlite*
+data/trading_controls.json

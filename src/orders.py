@@ -23,7 +23,9 @@ def sync_positions_to_targets(
     investable_equity = equity * max(0.0, min(1.0, 1.0 - cash_buffer))
     min_rebalance_dollars = max(min_trade_dollars, equity * max(rebalance_threshold, 0.0))
 
-    for symbol, target_weight in target_weights.items():
+    symbols = sorted(set(target_weights) | set(current_positions))
+    for symbol in symbols:
+        target_weight = target_weights.get(symbol, 0.0)
         price = latest_prices.get(symbol)
         if price is None or price <= 0:
             logger.warning("Skipping %s because latest price is invalid: %s", symbol, price)

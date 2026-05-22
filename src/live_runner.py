@@ -15,29 +15,82 @@ from .orders import sync_positions_to_targets
 from .portfolio import compute_target_weights
 from .signals import compute_signals_for_universe
 from .social import load_social_trends_csv
+from .strategy_models import STRATEGY_LABELS, strategy_signal_rows, weights_from_strategy_rows
 
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
-    config = get_config()
+def _max_live_exposure(config) -> float:
+    return min(
+        max(float(config.max_portfolio_exposure), 0.0),
+        max(1.0 - max(float(config.cash_buffer), 0.0), 0.0),
+        1.0,
+    )
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sizing_equity(config, account_equity: float) -> float:
+    cap = max(_as_float(getattr(config, "algorithm_equity_cap", 0.0)), 0.0)
+    return min(account_equity, cap) if cap > 0 else account_equity
+
+
+def _template_signal_map(rows: list[dict]) -> dict[str, dict[str, float | int]]:
+    return {
+        str(row["symbol"]): {
+            "signal": int(row.get("signal", 0)),
+            "score": _as_float(row.get("score")),
+            "price_score": _as_float(row.get("ret_N")),
+            "social_score": 0.0,
+            "volume_score": _as_float(row.get("volume_score")),
+            "ret_N": _as_float(row.get("ret_N")),
+            "sma_long": _as_float(row.get("sma_long")),
+        }
+        for row in rows
+    }
+
+
+def run_once(account_id: str | None = None) -> None:
+    controls = load_controls()
+    strategy = str(controls.get("active_strategy") or "momentum_social").lower()
+    if strategy == "none":
+        logger.warning("No algorithm strategy is selected. Exiting without sending orders.")
+        return
+
+    config = (
+        get_config(account_id=account_id, strategy_id=strategy)
+        if account_id
+        else get_config(strategy_id=strategy)
+    )
     configure_logging(config.log_file)
 
-    logger.info("Starting live runner in %s mode", "PAPER" if config.paper_trading else "LIVE")
+    logger.info(
+        "Starting live runner for account %s with trading endpoint %s",
+        config.account_id,
+        config.alpaca_base_url,
+    )
 
     if config.kill_switch:
         logger.warning("Kill switch is enabled. Exiting without sending orders.")
         return
 
-    controls = load_controls()
     if not controls["algorithm_enabled"]:
         logger.warning("Algorithm trading is disabled in dashboard controls. Exiting without sending orders.")
         return
+    logger.info("Active strategy: %s", STRATEGY_LABELS.get(strategy, strategy))
 
     trading_client = create_trading_client(config)
     data_client = create_data_client(config)
 
-    equity = get_account_equity(trading_client)
+    account_equity = get_account_equity(trading_client)
+    equity = _sizing_equity(config, account_equity)
+    if equity < account_equity:
+        logger.info("Algorithm sizing equity capped at %.2f from account equity %.2f", equity, account_equity)
     current_positions = get_positions(trading_client)
 
     bars_by_symbol = fetch_daily_bars(
@@ -48,31 +101,42 @@ def main() -> None:
         alpaca_data_client=data_client,
         data_feed=config.alpaca_data_feed,
     )
-    social_by_symbol = load_social_trends_csv(config.social_trends_csv, config.symbols)
-
-    signals = compute_signals_for_universe(
-        bars_by_symbol,
-        config.momentum_lookback_days,
-        config.long_ma_days,
-        short_lookback_days=config.short_momentum_lookback_days,
-        volume_lookback_days=config.volume_lookback_days,
-        social_by_symbol=social_by_symbol,
-        social_lookback_days=config.social_lookback_days,
-        price_momentum_weight=config.price_momentum_weight,
-        social_momentum_weight=config.social_momentum_weight,
-        volume_momentum_weight=config.volume_momentum_weight,
-        min_composite_score=config.min_composite_score,
-    )
-    target_weights = compute_target_weights(
-        signals,
-        config.max_weight_per_symbol,
-        max_portfolio_exposure=config.max_portfolio_exposure,
-        max_longs=config.max_longs,
-        target_annual_vol=config.target_annual_vol,
-    )
+    if strategy == "momentum_social":
+        social_by_symbol = load_social_trends_csv(config.social_trends_csv, config.symbols)
+        signals = compute_signals_for_universe(
+            bars_by_symbol,
+            config.momentum_lookback_days,
+            config.long_ma_days,
+            short_lookback_days=config.short_momentum_lookback_days,
+            volume_lookback_days=config.volume_lookback_days,
+            social_by_symbol=social_by_symbol,
+            social_lookback_days=config.social_lookback_days,
+            price_momentum_weight=config.price_momentum_weight,
+            social_momentum_weight=config.social_momentum_weight,
+            volume_momentum_weight=config.volume_momentum_weight,
+            min_composite_score=config.min_composite_score,
+        )
+        target_weights = compute_target_weights(
+            signals,
+            config.max_weight_per_symbol,
+            max_portfolio_exposure=_max_live_exposure(config),
+            max_longs=config.max_longs,
+            target_annual_vol=config.target_annual_vol,
+        )
+    else:
+        rows = strategy_signal_rows(strategy, bars_by_symbol)
+        signals = _template_signal_map(rows)
+        target_weights = weights_from_strategy_rows(
+            rows,
+            config.symbols,
+            max_longs=config.max_longs,
+            max_weight_per_symbol=config.max_weight_per_symbol,
+            max_portfolio_exposure=_max_live_exposure(config),
+        )
+    price_symbols = sorted(set(config.symbols) | set(current_positions))
     latest_prices = {
         symbol: get_latest_price(symbol, data_client, data_feed=config.alpaca_data_feed)
-        for symbol in config.symbols
+        for symbol in price_symbols
     }
 
     log_signals(signals, latest_prices)
@@ -88,6 +152,10 @@ def main() -> None:
         rebalance_threshold=config.rebalance_threshold,
     )
     log_orders(order_results)
+
+
+def main() -> None:
+    run_once()
 
 
 if __name__ == "__main__":

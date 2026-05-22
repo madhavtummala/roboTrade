@@ -21,7 +21,7 @@ def test_sanitize_dca_plan_keeps_only_universe_symbols() -> None:
     sanitized = sanitize_dca_plan(plan, UNIVERSE)
 
     assert [item["symbol"] for item in sanitized["accumulate"]["items"]] == ["SPY"]
-    assert [item["symbol"] for item in sanitized["sell"]["items"]] == ["QQQ"]
+    assert [item["symbol"] for item in sanitized["sell"]["items"]] == ["QQQ", "SPY"]
 
 
 def test_allocation_preview_uses_exact_item_amounts() -> None:
@@ -29,11 +29,11 @@ def test_allocation_preview_uses_exact_item_amounts() -> None:
         {
             "enabled": True,
             "frequency": "weekly",
-            "max_item_amount": 100,
+            "max_item_amount": 50,
             "accumulate": {
                 "enabled": True,
                 "items": [
-                    {"symbol": "SPY", "amount": 60},
+                    {"symbol": "SPY", "amount": 50},
                     {"symbol": "QQQ", "amount": 30},
                     {"symbol": "GLD", "amount": 10},
                 ],
@@ -46,20 +46,20 @@ def test_allocation_preview_uses_exact_item_amounts() -> None:
     preview = allocation_preview(plan)
 
     assert [row["symbol"] for row in preview] == ["SPY", "QQQ", "GLD"]
-    assert [round(row["notional"], 2) for row in preview] == [60.0, 30.0, 10.0]
+    assert [round(row["notional"], 2) for row in preview] == [50.0, 30.0, 10.0]
 
 
 def test_sanitize_dca_plan_clamps_item_amount_to_max() -> None:
     plan = sanitize_dca_plan(
         {
-            "max_item_amount": 100,
+            "max_item_amount": 50,
             "accumulate": {"items": [{"symbol": "SPY", "amount": 140}]},
             "sell": {"items": []},
         },
         UNIVERSE,
     )
 
-    assert plan["accumulate"]["items"][0]["amount"] == 100
+    assert plan["accumulate"]["items"][0]["amount"] == 50
 
 
 def test_sanitize_dca_plan_preserves_clamped_symbol_position() -> None:
@@ -72,3 +72,16 @@ def test_sanitize_dca_plan_preserves_clamped_symbol_position() -> None:
     )
 
     assert plan["accumulate"]["items"][0]["position"] == {"x": 1.0, "y": -0.25}
+
+
+def test_sanitize_dca_plan_preserves_schedule_pattern() -> None:
+    plan = sanitize_dca_plan(
+        {
+            "schedule_pattern": "0 9 * * 1-5",
+            "accumulate": {"items": [{"symbol": "SPY", "amount": 40}]},
+            "sell": {"items": []},
+        },
+        UNIVERSE,
+    )
+
+    assert plan["schedule_pattern"] == "0 9 * * 1-5"

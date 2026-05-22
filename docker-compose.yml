@@ -1,0 +1,19 @@
+services:
+  trading-bot:
+    build: .
+    image: trading-bot:local
+    env_file:
+      - .env
+    environment:
+      PORT: "8000"
+      TRADING_CONFIG_FILE: /config/trading_bot.yaml
+      STATE_DB_PATH: /data/trading_bot.sqlite
+      ALPHA_VANTAGE_NEWS_CSV: /data/social_trends.csv
+      LOG_FILE: /logs/trading.log
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./runtime/config:/config
+      - ./runtime/data:/data
+      - ./runtime/logs:/logs
+    restart: unless-stopped

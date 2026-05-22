@@ -115,7 +115,7 @@ def _rebalance_positions(
 
 
 def run_backtest(
-    starting_equity: float = 100_000.0,
+    starting_equity: float = 10_000.0,
     end_date: datetime | None = None,
     bars_by_symbol: dict[str, pd.DataFrame] | None = None,
     social_by_symbol: dict[str, pd.DataFrame] | None = None,
