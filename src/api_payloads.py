@@ -17,6 +17,7 @@ from .data import fetch_daily_bars
 from .backtest import calculate_performance_metrics
 from .bot_runtime import bot_runtime
 from .config import get_config, save_universe_symbols
+from .connectors import fetch_latest_news_sentiment, merge_social_frames, news_records_to_social_frames
 from .controls import load_controls, save_controls
 from .dca import allocation_preview, load_dca_plan, save_dca_plan
 from .portfolio import compute_target_weights
@@ -29,6 +30,15 @@ from .strategy_models import (
     strategy_signal_rows,
     strategy_signal_rows_from_prepared,
     weights_from_strategy_rows,
+)
+from .user_dual_momentum import (
+    UserDualMomentumConfig,
+    compute_composite_scores,
+    compute_market_regime,
+    compute_price_features,
+    decide_target_weights,
+    get_daily_bars as get_user_dual_daily_bars,
+    get_intraday_bars,
 )
 from .universe import load_tradable_names, resolve_project_path
 from .universe_selector import candidate_specs_by_symbol, preferred_symbols, recommend_universe_rows
@@ -111,8 +121,9 @@ def status_payload() -> dict[str, Any]:
             social_info["error"] = _redact(str(exc))
 
     config_summary = asdict(config)
-    for secret_field in ("alpaca_api_key", "alpaca_api_secret", "alpha_vantage_api_key"):
-        config_summary[secret_field] = bool(config_summary.get(secret_field))
+    for secret_field in list(config_summary):
+        if secret_field.endswith("_api_key") or secret_field.endswith("_api_secret"):
+            config_summary[secret_field] = bool(config_summary.get(secret_field))
 
     return {
         "mode": "READ_ONLY" if config.kill_switch else "ORDER_ENABLED",
@@ -124,7 +135,7 @@ def status_payload() -> dict[str, Any]:
         "universe": {
             "count": len(config.symbols),
             "symbols": config.symbols,
-            "tradables_csv": config.tradables_csv,
+            "master_list": config.tradables_csv,
         },
         "social": {
             **social_info,
@@ -146,7 +157,7 @@ def status_payload() -> dict[str, Any]:
 def universe_payload() -> dict[str, Any]:
     config = get_config()
     tradable_names = load_tradable_names(config.tradables_csv)
-    tradables = set(tradable_names)
+    tradables = set(tradable_names) if tradable_names else set(config.symbols)
     specs = candidate_specs_by_symbol(tradables)
 
     rows: list[dict[str, Any]] = []
@@ -203,6 +214,7 @@ def apply_universe_payload(body: dict[str, Any]) -> dict[str, Any]:
     config = get_config()
     tradable_names = load_tradable_names(config.tradables_csv)
     specs = candidate_specs_by_symbol(set(tradable_names))
+    validate_against_master = bool(tradable_names)
     raw_rows = body.get("rows") or []
     raw_symbols = body.get("symbols") or []
     if isinstance(raw_symbols, str):
@@ -215,13 +227,13 @@ def apply_universe_payload(body: dict[str, Any]) -> dict[str, Any]:
             symbol = str(row.get("symbol", row.get("Ticker", ""))).strip().upper()
             if not symbol or symbol in seen:
                 continue
-            if symbol not in tradable_names:
+            if validate_against_master and symbol not in tradable_names:
                 raise ValueError(f"{symbol} is not present in the tradables CSV.")
             spec = specs.get(symbol)
             proposed_rows.append(
                 {
                     "symbol": symbol,
-                    "name": tradable_names[symbol],
+                    "name": tradable_names.get(symbol) or str(row.get("name") or symbol),
                     "bucket": str(row.get("bucket") or (spec.bucket if spec else "")).strip(),
                 }
             )
@@ -230,13 +242,13 @@ def apply_universe_payload(body: dict[str, Any]) -> dict[str, Any]:
         for symbol in [str(item).strip().upper() for item in raw_symbols]:
             if not symbol or symbol in seen:
                 continue
-            if symbol not in tradable_names:
+            if validate_against_master and symbol not in tradable_names:
                 raise ValueError(f"{symbol} is not present in the tradables CSV.")
             spec = specs.get(symbol)
             proposed_rows.append(
                 {
                     "symbol": symbol,
-                    "name": tradable_names[symbol],
+                    "name": tradable_names.get(symbol) or symbol,
                     "bucket": spec.bucket if spec else "",
                 }
             )
@@ -294,9 +306,12 @@ def controls_payload() -> dict[str, Any]:
 def save_controls_payload(body: dict[str, Any]) -> dict[str, Any]:
     raw_controls = body.get("controls", body)
     if str(raw_controls.get("active_strategy") or "none") == "none":
-        raw_controls = {**raw_controls, "algorithm_enabled": False, "algorithm_power_confirmed": False}
+        raw_controls = {**raw_controls, "algorithm_enabled": False}
+    if str(raw_controls.get("options_strategy") or "none") == "none":
+        raw_controls = {**raw_controls, "options_trading_enabled": False}
     controls = save_controls(raw_controls)
     bot_runtime.wake_algorithm()
+    bot_runtime.wake_options()
     return {
         "controls": controls,
         "accounts": get_config(account_id=str(controls.get("trading_account_id") or "") or None).account_options,
@@ -361,8 +376,13 @@ def _latest_signal_bars(strategy: str = "momentum_social") -> tuple[dict[str, pd
         extra_buffer_days=config.history_extra_buffer_days,
         alpaca_data_client=data_client,
         data_feed=config.alpaca_data_feed,
+        include_latest=True,
+        config=config,
     )
-    social_by_symbol = load_social_trends_csv(config.social_trends_csv, config.symbols)
+    social_by_symbol = merge_social_frames(
+        load_social_trends_csv(config.social_trends_csv, config.symbols),
+        news_records_to_social_frames(fetch_latest_news_sentiment(config.symbols, config)),
+    )
     return bars_by_symbol, social_by_symbol
 
 
@@ -408,6 +428,9 @@ def strategy_signals_payload(strategy: str = "momentum_social") -> dict[str, Any
             ],
         }
 
+    if strategy == "user_dual_momentum":
+        return _user_dual_momentum_signals_payload()
+
     if strategy != "momentum_social":
         bars_by_symbol, _social_by_symbol = _latest_signal_bars(strategy)
         leaders = strategy_signal_rows(strategy, bars_by_symbol)
@@ -438,8 +461,15 @@ def strategy_signals_payload(strategy: str = "momentum_social") -> dict[str, Any
         extra_buffer_days=config.history_extra_buffer_days,
         alpaca_data_client=data_client,
         data_feed=config.alpaca_data_feed,
+        include_latest=True,
+        config=config,
     )
-    social_by_symbol = _sanitize_social_frames(load_social_trends_csv(config.social_trends_csv, config.symbols))
+    social_by_symbol = _sanitize_social_frames(
+        merge_social_frames(
+            load_social_trends_csv(config.social_trends_csv, config.symbols),
+            news_records_to_social_frames(fetch_latest_news_sentiment(config.symbols, config)),
+        )
+    )
     signals = compute_signals_for_universe(
         bars_by_symbol,
         config.momentum_lookback_days,
@@ -496,6 +526,122 @@ def strategy_signals_payload(strategy: str = "momentum_social") -> dict[str, Any
             {"label": "Active buys", "value": str(len(active))},
             {"label": "Universe", "value": str(len(signals))},
             {"label": "Exposure", "value": f"{sum(weights.values()) * 100:.0f}%"},
+        ],
+        "leaders": leaders,
+    }
+
+
+def _user_dual_momentum_sentiment_from_records(
+    symbols: list[str],
+    records: list[dict[str, Any]],
+    lookback_minutes: int,
+) -> tuple[dict[str, float], float, dict[str, dict[str, Any]], list[str]]:
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=max(lookback_minutes, 1))
+    by_symbol: dict[str, list[float]] = {symbol.upper(): [] for symbol in symbols}
+    metadata: dict[str, dict[str, Any]] = {
+        symbol.upper(): {"sentiment_records": 0, "sentiment_providers": []}
+        for symbol in symbols
+    }
+    providers: set[str] = set()
+    for record in records:
+        symbol = str(record.get("symbol", "")).upper()
+        if symbol not in by_symbol:
+            continue
+        timestamp = pd.to_datetime(record.get("timestamp"), utc=True, errors="coerce")
+        if not pd.isna(timestamp) and timestamp < cutoff:
+            continue
+        try:
+            sentiment = float(record.get("social_score", record.get("sentiment", 0.0)))
+        except (TypeError, ValueError):
+            sentiment = 0.0
+        provider = str(record.get("provider") or "").strip().lower()
+        if provider:
+            providers.add(provider)
+            if provider not in metadata[symbol]["sentiment_providers"]:
+                metadata[symbol]["sentiment_providers"].append(provider)
+        metadata[symbol]["sentiment_records"] += 1
+        by_symbol[symbol].append(max(-1.0, min(1.0, sentiment)))
+
+    symbol_sentiment = {
+        symbol: (sum(values) / len(values) if values else 0.0)
+        for symbol, values in by_symbol.items()
+    }
+    market_sentiment = symbol_sentiment.get("SPY")
+    if market_sentiment is None:
+        values = list(symbol_sentiment.values())
+        market_sentiment = sum(values) / len(values) if values else 0.0
+    return symbol_sentiment, float(market_sentiment), metadata, sorted(providers)
+
+
+def _user_dual_momentum_reason(row: dict[str, Any], weight: float, regime: str) -> str:
+    if weight > 0 and str(row.get("symbol")) in {"BIL", "SHY", "BND", "AGG", "IUSB", "IEF", "TLT"}:
+        return "Defensive rotation"
+    if weight > 0:
+        return "Risk-on rank"
+    if not bool(row.get("daily_trend_ok")):
+        return "Daily trend below zero"
+    if regime == "RISK_OFF":
+        return "Risk-off regime"
+    if regime == "CAUTIOUS":
+        return "Below cautious hurdle"
+    return "Below rank cutoff"
+
+
+def _user_dual_momentum_signals_payload() -> dict[str, Any]:
+    config = get_config(strategy_id="user_dual_momentum")
+    strategy_config = UserDualMomentumConfig.from_runtime_config(config)
+    symbols = strategy_config.symbols
+    data_client = create_data_client(config)
+    intraday_bars = get_intraday_bars(symbols, strategy_config.required_intraday_bars, config, data_client)
+    daily_bars = get_user_dual_daily_bars(symbols, strategy_config.daily_abs_momentum_lookback_days, config, data_client)
+    sentiment_records = fetch_latest_news_sentiment(symbols, config)
+    sentiment, market_sentiment, sentiment_meta, providers = _user_dual_momentum_sentiment_from_records(
+        symbols,
+        sentiment_records,
+        strategy_config.sentiment_lookback_minutes,
+    )
+    features = {
+        symbol: compute_price_features(symbol, intraday_bars.get(symbol, pd.DataFrame()), daily_bars.get(symbol, pd.DataFrame()), strategy_config)
+        for symbol in symbols
+    }
+    scores = compute_composite_scores(features, sentiment, strategy_config)
+    regime, regime_inputs = compute_market_regime(scores.get(strategy_config.regime_symbol, {}), market_sentiment, strategy_config)
+    weights = decide_target_weights(scores, regime, strategy_config)
+    leaders = []
+    for symbol, row in scores.items():
+        weight = float(weights.get(symbol, 0.0))
+        meta = sentiment_meta.get(symbol, {})
+        leaders.append(
+            {
+                "symbol": symbol,
+                "signal": "LONG" if weight > 0 else "FLAT",
+                "side": "LONG" if weight > 0 else "FLAT",
+                "close": _json_number(row.get("close")),
+                "score": _json_number(row.get("score")),
+                "price_score": _json_number(row.get("daily_return")),
+                "social_score": _json_number(row.get("sentiment_score")),
+                "sentiment_score": _json_number(row.get("sentiment_score")),
+                "sentiment_records": int(meta.get("sentiment_records", 0)),
+                "sentiment_providers": meta.get("sentiment_providers", []),
+                "market_sentiment": _json_number(regime_inputs.get("market_sentiment")),
+                "regime": regime,
+                "ret_N": _json_number(row.get("medium_return")),
+                "ret_short": _json_number(row.get("short_return")),
+                "realized_vol": _json_number(row.get("realized_volatility")),
+                "trend_ok": int(bool(row.get("daily_trend_ok"))),
+                "target_weight": _json_number(weight),
+                "reason": _user_dual_momentum_reason(row, weight, regime),
+            }
+        )
+    leaders.sort(key=lambda item: (item["side"] != "LONG", -float(item.get("target_weight") or 0.0), -float(item.get("score") or 0.0)))
+    return {
+        "strategy": "user_dual_momentum",
+        "wired": True,
+        "updated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        "summary": [
+            {"label": "Regime", "value": regime.replace("_", " ")},
+            {"label": "Sentiment", "value": ", ".join(providers) if providers else "No recent records"},
+            {"label": "Universe", "value": str(len(symbols))},
         ],
         "leaders": leaders,
     }

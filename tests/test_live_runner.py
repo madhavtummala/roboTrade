@@ -52,6 +52,11 @@ def test_live_runner_uses_selected_template_strategy(monkeypatch) -> None:
     monkeypatch.setattr(live_runner, "get_account_equity", lambda client: 1_000.0)
     monkeypatch.setattr(live_runner, "get_positions", lambda client: {})
     monkeypatch.setattr(live_runner, "fetch_daily_bars", lambda *args, **kwargs: {"AAA": _bars()})
+    monkeypatch.setattr(
+        live_runner,
+        "fetch_latest_market_quotes",
+        lambda symbols, config, data_client=None: {symbol: {"price": 100.0} for symbol in symbols},
+    )
     monkeypatch.setattr(live_runner, "get_latest_price", lambda symbol, client, data_feed=None: 100.0)
     monkeypatch.setattr(live_runner, "log_signals", lambda signals, prices: captured.update({"signals": signals}))
     monkeypatch.setattr(live_runner, "log_portfolio", lambda weights, equity: captured.update({"weights": weights}))

@@ -197,6 +197,8 @@ def fetch_daily_bars(
     data_feed: str | None = "iex",
     use_cache: bool = True,
     force_refresh: bool = False,
+    include_latest: bool = False,
+    config=None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch enough daily bars for a momentum signal and moving average calculation."""
     from .alpaca_client import get_historical_daily_bars
@@ -230,4 +232,16 @@ def fetch_daily_bars(
             df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
             df = df.sort_values("timestamp").reset_index(drop=True)
         normalized[symbol] = df
+    if include_latest:
+        from .config import get_config
+        from .connectors import append_latest_quotes_to_bars, fetch_latest_market_quotes
+
+        runtime_config = config or get_config()
+        quotes = fetch_latest_market_quotes(
+            symbols,
+            runtime_config,
+            data_client=alpaca_data_client,
+            force_refresh=force_refresh,
+        )
+        normalized = append_latest_quotes_to_bars(normalized, quotes)
     return normalized

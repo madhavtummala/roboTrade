@@ -1,5 +1,5 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
-const BUCKET_NAMES = ["accumulate", "sell"];
+const BUCKET_NAMES = ["buy", "sell"];
 const MAX_AMOUNT = 50;
 const WHEEL_STEP = 5;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -8,12 +8,12 @@ const BACKTEST_LABEL = "6M";
 const BACKTEST_STORAGE_KEY = "tradingBot.backtests.6m.v3";
 
 const ENABLED_COLORS = {
-  accumulate: "#024c4a",
+  buy: "#024c4a",
   sell: "#7a3800",
 };
 
 const DISABLED_COLORS = {
-  accumulate: "#668f8b",
+  buy: "#668f8b",
   sell: "#a36d3c",
 };
 
@@ -74,16 +74,23 @@ const STRATEGIES = [
   },
   {
     key: "user_dual_momentum",
-    name: "User ETF Dual Momentum",
+    name: "Intraday Social Dual Momentum",
     status: "User",
-    horizon: "Monthly",
+    horizon: "Intraday",
     risk: "Medium",
-    logic: "Ranks the curated ETF universe by blended 12-month and 3-month momentum, requires risk-on assets to beat the cash hurdle, and moves to the available defensive sleeve or cash when risk-on fails.",
-    signals: ["12-month return", "3-month return", "Cash hurdle", "Risk-adjusted momentum", "Defensive sleeve"],
+    logic: "Ranks the curated ETF universe with 30-minute momentum, daily absolute trend, and recent sentiment; regime rules rotate between risk-on and defensive sleeves.",
+    signals: ["30-minute momentum", "Daily trend", "News sentiment", "Market regime", "Defensive sleeve"],
   },
 ];
 
 const OPTIONS_STRATEGIES = [
+  {
+    key: "options_swing_dual_momentum",
+    name: "Swing Dual Momentum",
+    risk: "Directional",
+    description: "Uses dual-momentum ETF signals to buy 30-60 DTE calls for bullish underlyings or puts for bearish underlyings, with premium and liquidity caps.",
+    config: ["Dual momentum underlyings", "Long calls/puts only", "30-60 DTE", "0.35-0.65 delta", "Premium capped"],
+  },
   {
     key: "covered_call",
     name: "Covered Call",
@@ -145,10 +152,10 @@ const state = {
   controls: {
     trading_account_id: "",
     algorithm_enabled: false,
-    algorithm_power_confirmed: false,
     options_trading_enabled: false,
     active_strategy: "momentum_social",
     options_strategy: "none",
+    options_trading_account_id: "",
   },
   accounts: [],
   bot: null,
@@ -158,6 +165,10 @@ const state = {
   invalidNodes: [],
   selected: null,
   drag: null,
+  pinch: null,
+  touchPointers: new Map(),
+  boardPointers: new Map(),
+  boardPinch: null,
   draft: null,
   animationId: null,
   backtests: {},
@@ -232,6 +243,14 @@ function isDcaEnabled() {
   return Boolean(state.dca?.plan?.enabled);
 }
 
+function isAlgorithmTradingEnabled() {
+  return Boolean(state.controls?.algorithm_enabled) && activeAlgorithmKey() !== "none";
+}
+
+function isOptionsTradingEnabled() {
+  return Boolean(state.controls?.options_trading_enabled) && activeOptionsKey() !== "none";
+}
+
 function bucketColor(bucketName) {
   return isDcaEnabled() ? ENABLED_COLORS[bucketName] : DISABLED_COLORS[bucketName];
 }
@@ -246,14 +265,8 @@ function bucketItems(bucketName) {
 
 function setBucketItems(bucketName, items) {
   state.dca.plan[bucketName].items = items.map((item) => ({
-    ...item,
+    symbol: item.symbol,
     amount: clamp(Number(item.amount || 0), 0, MAX_AMOUNT),
-    position: item.position
-      ? {
-        x: clamp(Number(item.position.x || 0), -1, 1),
-        y: clamp(Number(item.position.y || 0), -1, 1),
-      }
-      : undefined,
   }));
   state.dca.plan[bucketName].amount = state.dca.plan[bucketName].items.reduce(
     (total, item) => total + Number(item.amount || 0),
@@ -297,11 +310,11 @@ function calculateLayout() {
     stacked,
     buckets: stacked
       ? {
-        accumulate: { cx: width / 2, cy: height * 0.27, r: baseR, baseR, maxR, label: "BUY" },
+        buy: { cx: width / 2, cy: height * 0.27, r: baseR, baseR, maxR, label: "BUY" },
         sell: { cx: width / 2, cy: height * 0.72, r: baseR, baseR, maxR, label: "SELL" },
       }
       : {
-        accumulate: { cx: width * 0.29, cy: height * 0.51, r: baseR, baseR, maxR, label: "BUY" },
+        buy: { cx: width * 0.29, cy: height * 0.51, r: baseR, baseR, maxR, label: "BUY" },
         sell: { cx: width * 0.71, cy: height * 0.51, r: baseR, baseR, maxR, label: "SELL" },
       },
   };
@@ -363,7 +376,7 @@ function distance(point, bucket) {
 
 function nearestBucket(point) {
   const buckets = state.layout.buckets;
-  return distance(point, buckets.accumulate) <= distance(point, buckets.sell) ? "accumulate" : "sell";
+  return distance(point, buckets.buy) <= distance(point, buckets.sell) ? "buy" : "sell";
 }
 
 function bucketAtPoint(point) {
@@ -430,7 +443,7 @@ function buildNodes() {
       const id = `${bucketName}:${item.symbol}`;
       const oldNode = previous.get(id);
       const fallback = fallbackPosition(index, items.length, bucketName);
-      const point = oldNode || pointFromPosition(item.position || fallback, bucket, radius);
+      const point = oldNode || pointFromPosition(fallback, bucket, radius);
       const clamped = clampPointToBucket(point, bucketName, radius);
       state.nodes.push({
         id,
@@ -452,12 +465,10 @@ function buildNodes() {
 function syncNodeToPlan(node) {
   const item = bucketItems(node.bucketName).find((candidate) => candidate.symbol === node.symbol);
   if (!item) return;
-  const bucket = state.layout.buckets[node.bucketName];
   const clamped = clampPointToBucket({ x: node.x, y: node.y }, node.bucketName, node.radius);
   node.x = clamped.x;
   node.y = clamped.y;
   item.amount = clamp(node.amount, 0, MAX_AMOUNT);
-  item.position = pointToPosition(clamped, bucket, node.radius);
 }
 
 function syncNodesToPlan() {
@@ -475,6 +486,7 @@ function renderBoard() {
 
   const svg = $("#bubbleBoard");
   svg.setAttribute("viewBox", `0 0 ${state.layout.width} ${state.layout.height}`);
+  svg.classList.toggle("resize-mode", Boolean(state.selected));
   svg.replaceChildren();
 
   BUCKET_NAMES.forEach((bucketName) => {
@@ -511,6 +523,10 @@ function renderBoard() {
   if (state.draft) renderDraft(svg, state.draft);
 
   svg.ondblclick = handleBoardDoubleClick;
+  svg.onpointerdown = startBoardPointer;
+  svg.onpointermove = handleBoardPointerMove;
+  svg.onpointerup = endBoardPointer;
+  svg.onpointercancel = endBoardPointer;
   startAnimation();
 }
 
@@ -523,7 +539,7 @@ function renderAsset(svg, node, extraClass) {
   group.appendChild(svgEl("circle", { r: node.radius, fill: bucketColor(node.bucketName) }));
   group.appendChild(textEl({ class: "symbol-label", y: -5 }, node.symbol));
   group.appendChild(textEl({ class: "amount-label", y: 14 }, `$${Math.round(node.amount)}`));
-  group.addEventListener("pointerdown", (event) => startDrag(event, node));
+  group.addEventListener("pointerdown", (event) => startAssetPointer(event, node));
   group.addEventListener("wheel", (event) => resizeNode(event, node), { passive: false });
   group.addEventListener("dblclick", (event) => {
     event.stopPropagation();
@@ -619,16 +635,154 @@ function stepPhysics() {
   });
 }
 
-function startDrag(event, node) {
+function pointersForNode(node) {
+  return Array.from(state.touchPointers.entries())
+    .filter(([_id, pointer]) => pointer.node === node)
+    .map(([id, pointer]) => ({ id, ...pointer }));
+}
+
+function pinchDistanceForPointers(pointers) {
+  if (pointers.length < 2) return 0;
+  return Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y);
+}
+
+function beginPinch(node, element) {
+  const pointers = pointersForNode(node).slice(-2);
+  const startDistance = pinchDistanceForPointers(pointers);
+  if (startDistance <= 0) return;
+  if (state.drag?.element) state.drag.element.classList.remove("dragging");
+  state.drag = null;
+  state.pinch = {
+    node,
+    element,
+    pointerIds: pointers.map((pointer) => pointer.id),
+    startDistance,
+    startAmount: node.amount,
+  };
+  element.classList.add("pinching");
+}
+
+function startAssetPointer(event, node) {
   event.preventDefault();
   hideSymbolEntry();
-  state.selected = node.symbol;
-  state.drag = { node, pointerId: event.pointerId };
+  const wasSelected = state.selected === node.symbol;
+  state.selected = wasSelected ? null : node.symbol;
+  $("#bubbleBoard")?.classList.toggle("resize-mode", Boolean(state.selected));
+  if (event.pointerType === "touch") updateBoardElements();
   event.currentTarget.setPointerCapture(event.pointerId);
+  event.currentTarget.onpointermove = (moveEvent) => handleAssetPointerMove(moveEvent, node);
+  event.currentTarget.onpointerup = (upEvent) => endAssetPointer(upEvent, node);
+  event.currentTarget.onpointercancel = (upEvent) => endAssetPointer(upEvent, node);
+
+  if (event.pointerType === "touch") {
+    state.touchPointers.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+      node,
+      element: event.currentTarget,
+    });
+    if (pointersForNode(node).length >= 2) {
+      beginPinch(node, event.currentTarget);
+      return;
+    }
+  }
+
+  state.drag = { node, pointerId: event.pointerId, element: event.currentTarget };
   event.currentTarget.classList.add("dragging");
-  event.currentTarget.onpointermove = (moveEvent) => dragNode(moveEvent, node);
-  event.currentTarget.onpointerup = (upEvent) => endDrag(upEvent, node);
-  event.currentTarget.onpointercancel = (upEvent) => endDrag(upEvent, node);
+}
+
+function updateTouchPointer(event, node) {
+  if (event.pointerType !== "touch" || !state.touchPointers.has(event.pointerId)) return;
+  const current = state.touchPointers.get(event.pointerId);
+  state.touchPointers.set(event.pointerId, {
+    ...current,
+    x: event.clientX,
+    y: event.clientY,
+    node,
+  });
+}
+
+function resizeNodeToAmount(node, amount) {
+  node.amount = clamp(Math.round(amount / WHEEL_STEP) * WHEEL_STEP, 0, MAX_AMOUNT);
+  node.radius = itemRadius(node.amount);
+  syncNodeToPlan(node);
+}
+
+function selectedDcaNode() {
+  return state.nodes.find((node) => node.symbol === state.selected) || null;
+}
+
+function boardPointers() {
+  return Array.from(state.boardPointers.entries()).map(([id, pointer]) => ({ id, ...pointer }));
+}
+
+function beginBoardPinch() {
+  const node = selectedDcaNode();
+  const pointers = boardPointers().slice(-2);
+  const startDistance = pinchDistanceForPointers(pointers);
+  if (!node || startDistance <= 0) return;
+  state.boardPinch = {
+    node,
+    pointerIds: pointers.map((pointer) => pointer.id),
+    startDistance,
+    startAmount: node.amount,
+  };
+}
+
+function startBoardPointer(event) {
+  if (event.pointerType !== "touch" || !state.selected || event.target.closest(".asset")) return;
+  event.preventDefault();
+  event.currentTarget.setPointerCapture(event.pointerId);
+  state.boardPointers.set(event.pointerId, {
+    x: event.clientX,
+    y: event.clientY,
+  });
+  if (state.boardPointers.size >= 2) beginBoardPinch();
+}
+
+function handleBoardPointerMove(event) {
+  if (event.pointerType !== "touch" || !state.boardPointers.has(event.pointerId)) return;
+  event.preventDefault();
+  state.boardPointers.set(event.pointerId, {
+    x: event.clientX,
+    y: event.clientY,
+  });
+  if (!state.boardPinch) return;
+  const pointers = state.boardPinch.pointerIds
+    .map((id) => state.boardPointers.get(id))
+    .filter(Boolean);
+  const currentDistance = pinchDistanceForPointers(pointers);
+  if (currentDistance <= 0) return;
+  resizeNodeToAmount(state.boardPinch.node, state.boardPinch.startAmount + ((currentDistance - state.boardPinch.startDistance) / 6));
+  updateBoardElements();
+}
+
+function endBoardPointer(event) {
+  if (event.pointerType !== "touch") return;
+  state.boardPointers.delete(event.pointerId);
+  if (state.boardPinch && state.boardPointers.size < 2) {
+    state.boardPinch = null;
+    renderDca();
+  }
+}
+
+function handleAssetPointerMove(event, node) {
+  event.preventDefault();
+  updateTouchPointer(event, node);
+  if (state.pinch?.node === node) {
+    const pointers = state.pinch.pointerIds
+      .map((id) => state.touchPointers.get(id))
+      .filter(Boolean);
+    const currentDistance = pinchDistanceForPointers(pointers);
+    if (currentDistance > 0) {
+      resizeNodeToAmount(node, state.pinch.startAmount + ((currentDistance - state.pinch.startDistance) / 6));
+      updateBoardElements();
+    }
+    return;
+  }
+  if (state.drag?.node === node && state.drag.pointerId === event.pointerId) {
+    dragNode(event, node);
+  }
 }
 
 function dragNode(event, node) {
@@ -643,20 +797,32 @@ function dragNode(event, node) {
   node.vy = 0;
 }
 
-function endDrag(event, node) {
-  event.currentTarget.classList.remove("dragging");
-  state.drag = null;
-  moveAsset(node);
-  renderDca();
+function endAssetPointer(event, node) {
+  if (event.pointerType === "touch") state.touchPointers.delete(event.pointerId);
+  if (state.pinch?.node === node) {
+    const remaining = pointersForNode(node);
+    if (remaining.length >= 2) {
+      beginPinch(node, state.pinch.element);
+      return;
+    }
+    state.pinch.element.classList.remove("pinching");
+    state.pinch = null;
+    renderDca();
+    return;
+  }
+  if (state.drag?.node === node && state.drag.pointerId === event.pointerId) {
+    event.currentTarget.classList.remove("dragging");
+    state.drag = null;
+    moveAsset(node);
+    renderDca();
+  }
 }
 
 function resizeNode(event, node) {
   event.preventDefault();
   event.stopPropagation();
   const direction = event.deltaY > 0 ? 1 : -1;
-  node.amount = clamp(Math.round(node.amount / WHEEL_STEP) * WHEEL_STEP + direction * WHEEL_STEP, 0, MAX_AMOUNT);
-  node.radius = itemRadius(node.amount);
-  syncNodeToPlan(node);
+  resizeNodeToAmount(node, Math.round(node.amount / WHEEL_STEP) * WHEEL_STEP + direction * WHEEL_STEP);
   renderDca();
 }
 
@@ -725,13 +891,9 @@ function commitSymbolEntry() {
   }
 
   const amount = 25;
-  const bucket = state.layout.buckets[draft.bucketName];
   state.dca.plan[draft.bucketName].items.push({
     symbol: row.symbol,
-    name: row.name,
-    bucket: row.bucket,
     amount,
-    position: pointToPosition(draft, bucket, itemRadius(amount)),
   });
   setBucketItems(draft.bucketName, state.dca.plan[draft.bucketName].items);
   renderDca();
@@ -755,9 +917,7 @@ function moveAsset(node) {
   BUCKET_NAMES.forEach((bucketName) => {
     state.dca.plan[bucketName].items = bucketItems(bucketName).filter((item) => item.symbol !== node.symbol);
   });
-  const bucket = state.layout.buckets[node.bucketName];
   found.item.amount = node.amount;
-  found.item.position = pointToPosition(node, bucket, node.radius);
   state.dca.plan[node.bucketName].items.push(found.item);
   BUCKET_NAMES.forEach((bucketName) => setBucketItems(bucketName, bucketItems(bucketName)));
 }
@@ -802,6 +962,24 @@ function optionsChoices() {
 
 function strategyByKey(strategyKey) {
   return algorithmChoices().find((choice) => choice.key === strategyKey) || NONE_ALGORITHM;
+}
+
+function optionsUnderlyingStrategyKey(optionsKey = activeOptionsKey()) {
+  if (optionsKey === "options_swing_dual_momentum") return "dual_momentum";
+  return "none";
+}
+
+function optionsSignalChoice() {
+  const selected = optionsChoices().find((choice) => choice.key === activeOptionsKey()) || NONE_OPTIONS;
+  const underlyingKey = optionsUnderlyingStrategyKey(selected.key);
+  const underlying = strategyByKey(underlyingKey);
+  if (underlyingKey === "none") return selected;
+  return {
+    ...underlying,
+    name: selected.name,
+    logic: selected.description,
+    signals: underlying.signals || selected.config || [],
+  };
 }
 
 function activeAlgorithmKey() {
@@ -893,6 +1071,8 @@ function renderAlgorithmDeck() {
   const activeKey = activeAlgorithmKey();
   const activeIndex = Math.max(0, choices.findIndex((choice) => choice.key === activeKey));
   const renderKey = `${activeKey}:${choices.length}`;
+  deck.classList.toggle("locked", isAlgorithmTradingEnabled());
+  deck.setAttribute("aria-disabled", String(isAlgorithmTradingEnabled()));
   if (state.renderedAlgorithmDeckKey === renderKey && deck.children.length) {
     renderAlgorithmSignals();
     return;
@@ -1008,7 +1188,10 @@ async function applyUniverseProposal() {
     hydrateStoredBacktests();
     renderDca();
     renderAlgorithmDeck();
+    renderOptionsSignals();
     loadSignals(activeAlgorithmKey());
+    const optionsSignalKey = optionsUnderlyingStrategyKey();
+    if (optionsSignalKey !== "none" && optionsSignalKey !== activeAlgorithmKey()) loadSignals(optionsSignalKey);
     loadCachedBacktestsForDeck();
     showToast("Universe applied");
   } catch (error) {
@@ -1020,7 +1203,7 @@ async function applyUniverseProposal() {
 }
 
 async function loadCachedBacktestsForDeck() {
-  const keys = algorithmChoices().map((strategy) => strategy.key);
+  const keys = [...new Set([...algorithmChoices().map((strategy) => strategy.key), optionsUnderlyingStrategyKey()].filter(Boolean))];
   for (const strategyKey of keys) {
     if (!state.backtests[strategyKey] && !state.backtestLoading[strategyKey]) {
       await loadBacktest(strategyKey, false, { cacheOnly: true });
@@ -1036,6 +1219,7 @@ async function ensureSignals(strategyKey) {
 async function loadSignals(strategyKey) {
   state.signalLoading[strategyKey] = true;
   renderAlgorithmSignals();
+  renderOptionsSignals();
   try {
     state.signals[strategyKey] = await api(`/api/strategy-signals?strategy=${encodeURIComponent(strategyKey)}`, {
       timeoutMs: 60000,
@@ -1045,10 +1229,19 @@ async function loadSignals(strategyKey) {
   } finally {
     state.signalLoading[strategyKey] = false;
     renderAlgorithmSignals();
+    renderOptionsSignals();
   }
 }
 
 function formatSignalDetail(strategyKey, row) {
+  if (strategyKey === "user_dual_momentum") {
+    const providers = Array.isArray(row.sentiment_providers) && row.sentiment_providers.length
+      ? row.sentiment_providers.join(", ")
+      : "none";
+    const close = row.close ? ` / Close ${money(row.close, 2)}` : "";
+    const reason = row.reason ? `${row.reason} / ` : "";
+    return `${reason}Sentiment ${num(row.sentiment_score ?? row.social_score, 2)} (${providers}, ${Number(row.sentiment_records || 0)} recs) / Regime ${row.regime || "pending"}${close}`;
+  }
   if (row.reason) {
     const close = row.close ? ` / Close ${money(row.close, 2)}` : "";
     return `${row.reason}${close}`;
@@ -1103,7 +1296,7 @@ function backtestOrderText(backtest) {
   return `${Number(orders.total_orders || 0)} orders / ${money(traded)} ${tradingLabel}${plannedText}${peakText} / max exposure ${percent(orders.max_gross_exposure_pct)}`;
 }
 
-function renderUniverseReview() {
+function renderUniverseReview(label = "Algorithm universe") {
   const proposal = state.universeProposal;
   const currentSymbols = enabledUniverseSymbols();
   const rows = proposal?.rows || [];
@@ -1114,7 +1307,7 @@ function renderUniverseReview() {
       ? `${rows.length}/${proposal.eligible_count || rows.length}`
       : `${currentSymbols.length} active`;
   return `
-    <section class="universeReview" aria-label="Algorithm universe">
+    <section class="universeReview" aria-label="${escapeHtml(label)}">
       <div class="cachedBacktestHeader">
         <span>Universe</span>
         <strong>${escapeHtml(status)}</strong>
@@ -1145,15 +1338,19 @@ function renderUniverseReview() {
   `;
 }
 
-function renderAlgorithmSignals() {
-  const card = $("#algorithmSignalCard");
+function renderSignalBacktestCard({
+  card,
+  strategyKey,
+  selected,
+  kicker = "Position Signals",
+  backtestChartId = "activeBacktestChart",
+  universeLabel = "Algorithm universe",
+}) {
   if (!card) return;
-  const activeKey = activeAlgorithmKey();
-  const selected = strategyByKey(activeKey);
-  const payload = state.signals[activeKey];
-  const backtest = state.backtests[activeKey];
-  const loading = Boolean(state.signalLoading[activeKey]);
-  const backtestLoading = Boolean(state.backtestLoading[activeKey]);
+  const payload = state.signals[strategyKey];
+  const backtest = state.backtests[strategyKey];
+  const loading = Boolean(state.signalLoading[strategyKey]);
+  const backtestLoading = Boolean(state.backtestLoading[strategyKey]);
   const signalInputs = (selected.signals || []).slice(0, 5);
   const backtestCaption = backtestCaptionText(backtest, backtestLoading);
   const equityCaption = backtestEquityText(backtest);
@@ -1167,11 +1364,11 @@ function renderAlgorithmSignals() {
   card.innerHTML = `
     <header class="signalHeader">
       <div>
-        <span class="deckKicker">Position Signals</span>
+        <span class="deckKicker">${escapeHtml(kicker)}</span>
       </div>
       <div class="signalActions">
-        <button class="refreshUniverse" type="button" data-refresh-universe ${universeAttrs}>Universe</button>
-        <button class="refreshBacktest" type="button" data-refresh-backtest="${escapeHtml(activeKey)}" ${refreshAttrs}>Backtest</button>
+        <button class="refreshUniverse" type="button" data-refresh-universe ${universeAttrs}>Refresh Universe</button>
+        <button class="refreshBacktest" type="button" data-refresh-backtest="${escapeHtml(strategyKey)}" ${refreshAttrs}>Backtest</button>
       </div>
     </header>
     <div class="signalBody">
@@ -1185,7 +1382,7 @@ function renderAlgorithmSignals() {
             <article>
               <strong>${escapeHtml(row.symbol)}</strong>
               <span>${escapeHtml(row.side || row.signal)} / Score ${num(row.score, 2)} / Weight ${percent(row.target_weight)}</span>
-              <span>${escapeHtml(formatSignalDetail(activeKey, row))}</span>
+              <span>${escapeHtml(formatSignalDetail(strategyKey, row))}</span>
             </article>
           `).join("")
           : renderSignalFallbackRows(selected, payload, signalInputs)
@@ -1196,15 +1393,27 @@ function renderAlgorithmSignals() {
           <span>${BACKTEST_LABEL} Backtest</span>
           <strong>${escapeHtml(backtestStatusLabel(backtest, backtestLoading))}</strong>
         </div>
-        <svg class="deckChart" id="activeBacktestChart" role="img" aria-label="${BACKTEST_LABEL} backtest chart"></svg>
+        <svg class="deckChart" id="${escapeHtml(backtestChartId)}" role="img" aria-label="${BACKTEST_LABEL} backtest chart"></svg>
         ${backtestCaption ? `<p>${escapeHtml(backtestCaption)}</p>` : ""}
         ${equityCaption ? `<p>${escapeHtml(equityCaption)}</p>` : ""}
         ${orderCaption ? `<p>${escapeHtml(orderCaption)}</p>` : ""}
         ${backtest?.offline_error ? `<p>${escapeHtml(backtest.offline_error)}</p>` : ""}
       </section>
+      ${renderUniverseReview(universeLabel)}
     </div>
   `;
-  renderBacktestChart(backtest, $("#activeBacktestChart"));
+  renderBacktestChart(backtest, $(`#${backtestChartId}`));
+}
+
+function renderAlgorithmSignals() {
+  renderSignalBacktestCard({
+    card: $("#algorithmSignalCard"),
+    strategyKey: activeAlgorithmKey(),
+    selected: strategyByKey(activeAlgorithmKey()),
+    kicker: "Position Signals",
+    backtestChartId: "activeBacktestChart",
+    universeLabel: "Algorithm universe",
+  });
 }
 
 function renderSignalFallbackRows(selected, payload, signalInputs) {
@@ -1231,11 +1440,13 @@ function renderSignalFallbackRows(selected, payload, signalInputs) {
 }
 
 async function selectAlgorithmStrategy(strategyKey) {
+  if (isAlgorithmTradingEnabled()) {
+    showToast("Turn algorithm off before changing strategies");
+    return;
+  }
   if (strategyKey === activeAlgorithmKey()) return;
   state.controls.active_strategy = strategyKey;
-  state.controls.backtest_strategy = strategyKey;
   if (strategyKey === "none") state.controls.algorithm_enabled = false;
-  if (strategyKey === "none") state.controls.algorithm_power_confirmed = false;
   renderAlgorithmDeck();
   renderAlgorithmPower();
   const savePromise = saveControlsOnly({ renderDecks: false });
@@ -1252,6 +1463,10 @@ function canShiftDeck() {
 }
 
 function shiftAlgorithmDeck(direction) {
+  if (isAlgorithmTradingEnabled()) {
+    showToast("Turn algorithm off before changing strategies");
+    return;
+  }
   const choices = algorithmChoices();
   const index = Math.max(0, choices.findIndex((choice) => choice.key === activeAlgorithmKey()));
   const nextIndex = clamp(index + direction, 0, choices.length - 1);
@@ -1264,6 +1479,7 @@ function shiftAlgorithmDeck(direction) {
 }
 
 function selectRelativeAlgorithm(direction) {
+  if (isAlgorithmTradingEnabled()) return;
   const choices = algorithmChoices();
   const index = Math.max(0, choices.findIndex((choice) => choice.key === activeAlgorithmKey()));
   const nextIndex = clamp(index + direction, 0, choices.length - 1);
@@ -1278,6 +1494,8 @@ function renderOptionsDeck() {
   const activeKey = activeOptionsKey();
   const activeIndex = Math.max(0, choices.findIndex((choice) => choice.key === activeKey));
   const renderKey = `${activeKey}:${choices.length}`;
+  deck.classList.toggle("locked", isOptionsTradingEnabled());
+  deck.setAttribute("aria-disabled", String(isOptionsTradingEnabled()));
   if (state.renderedOptionsDeckKey === renderKey && deck.children.length) {
     renderOptionsInsight();
     return;
@@ -1305,14 +1523,25 @@ function renderOptionsDeck() {
 }
 
 async function selectOptionsStrategy(strategyKey) {
+  if (isOptionsTradingEnabled()) {
+    showToast("Turn options bot off before changing strategies");
+    return;
+  }
   if (strategyKey === activeOptionsKey()) return;
   state.controls.options_strategy = strategyKey;
-  state.controls.options_trading_enabled = strategyKey !== "none";
+  if (strategyKey === "none") state.controls.options_trading_enabled = false;
   renderOptionsDeck();
-  await saveControlsOnly({ renderDecks: false });
+  renderOptionsPower();
+  const signalKey = optionsUnderlyingStrategyKey(strategyKey);
+  const savePromise = saveControlsOnly({ renderDecks: false });
+  await Promise.all([savePromise, signalKey === "none" ? Promise.resolve() : ensureSignals(signalKey)]);
 }
 
 function shiftOptionsDeck(direction) {
+  if (isOptionsTradingEnabled()) {
+    showToast("Turn options bot off before changing strategies");
+    return;
+  }
   const choices = optionsChoices();
   const index = Math.max(0, choices.findIndex((choice) => choice.key === activeOptionsKey()));
   const nextIndex = clamp(index + direction, 0, choices.length - 1);
@@ -1325,6 +1554,7 @@ function shiftOptionsDeck(direction) {
 }
 
 function selectRelativeOptions(direction) {
+  if (isOptionsTradingEnabled()) return;
   const choices = optionsChoices();
   const index = Math.max(0, choices.findIndex((choice) => choice.key === activeOptionsKey()));
   const nextIndex = clamp(index + direction, 0, choices.length - 1);
@@ -1334,21 +1564,69 @@ function selectRelativeOptions(direction) {
 
 function renderOptionsInsight() {
   const card = $("#optionsSignalCard");
-  if (!card) return;
-  const selected = optionsChoices().find((choice) => choice.key === activeOptionsKey()) || NONE_OPTIONS;
-  card.innerHTML = `
-    <span class="deckKicker">Options Setup</span>
-    <h2>${escapeHtml(selected.name)}</h2>
-    <p>${escapeHtml(selected.description)}</p>
-    <div class="signalRows">
-      ${(selected.config || []).map((item) => `
-        <article>
-          <strong>${escapeHtml(item)}</strong>
-          <span>${selected.key === "none" ? "Inactive" : "Review before enabling"}</span>
-        </article>
-      `).join("")}
-    </div>
-  `;
+  const strategyKey = optionsUnderlyingStrategyKey();
+  if (strategyKey === "none") {
+    if (!card) return;
+    const selected = optionsChoices().find((choice) => choice.key === activeOptionsKey()) || NONE_OPTIONS;
+    card.innerHTML = `
+      <span class="deckKicker">Options Setup</span>
+      <h2>${escapeHtml(selected.name)}</h2>
+      <p>${escapeHtml(selected.description)}</p>
+      <div class="signalRows">
+        ${(selected.config || []).map((item) => `
+          <article>
+            <strong>${escapeHtml(item)}</strong>
+            <span>${selected.key === "none" ? "Inactive" : "Review before enabling"}</span>
+          </article>
+        `).join("")}
+      </div>
+    `;
+    return;
+  }
+  renderSignalBacktestCard({
+    card,
+    strategyKey,
+    selected: optionsSignalChoice(),
+    kicker: "Underlying Signals",
+    backtestChartId: "optionsBacktestChart",
+    universeLabel: "Options underlying universe",
+  });
+}
+
+const renderOptionsSignals = renderOptionsInsight;
+
+function renderOptionsPower() {
+  const enabled = isOptionsTradingEnabled();
+  const button = $("#optionsPowerToggle");
+  const panel = $("#optionsRunPanel");
+  const deck = $("#optionsDeck");
+  const select = $("#optionsTradingAccount");
+  if (button) {
+    button.setAttribute("aria-pressed", String(enabled));
+    button.classList.toggle("on", enabled);
+    button.disabled = activeOptionsKey() === "none";
+    button.innerHTML = '<span aria-hidden="true">&#9211;</span>';
+  }
+  if (panel) panel.classList.toggle("is-on", enabled);
+  if (deck) {
+    deck.classList.toggle("locked", enabled);
+    deck.setAttribute("aria-disabled", String(enabled));
+  }
+  document.querySelectorAll('[data-deck="options"]').forEach((button) => {
+    button.disabled = enabled;
+  });
+  if (select) {
+    const accounts = state.accounts.length
+      ? state.accounts
+      : [{ id: state.controls?.options_trading_account_id || state.controls?.trading_account_id || "default", label: "Default" }];
+    const activeAccount = state.controls?.options_trading_account_id || state.controls?.trading_account_id || accounts[0]?.id || "";
+    select.innerHTML = accounts.map((account) => `
+      <option value="${escapeHtml(account.id)}"${account.id === activeAccount ? " selected" : ""}>
+        ${escapeHtml(account.label || account.id)}
+      </option>
+    `).join("");
+    select.disabled = enabled;
+  }
 }
 
 function updateFeatureToggles() {
@@ -1364,10 +1642,11 @@ function updateFeatureToggles() {
 }
 
 function renderAlgorithmPower() {
-  const enabled = Boolean(state.controls?.algorithm_enabled) && activeAlgorithmKey() !== "none";
+  const enabled = isAlgorithmTradingEnabled();
   const button = $("#algorithmPowerToggle");
   const panel = $("#algorithmRunPanel");
   const select = $("#tradingAccount");
+  const deck = $("#algorithmDeck");
   if (button) {
     button.setAttribute("aria-pressed", String(enabled));
     button.classList.toggle("on", enabled);
@@ -1375,6 +1654,13 @@ function renderAlgorithmPower() {
     button.innerHTML = '<span aria-hidden="true">&#9211;</span>';
   }
   if (panel) panel.classList.toggle("is-on", enabled);
+  if (deck) {
+    deck.classList.toggle("locked", enabled);
+    deck.setAttribute("aria-disabled", String(enabled));
+  }
+  document.querySelectorAll('[data-deck="algorithm"]').forEach((button) => {
+    button.disabled = enabled;
+  });
   if (select) {
     const accounts = state.accounts.length
       ? state.accounts
@@ -1425,7 +1711,14 @@ function renderBacktestChart(payload, svg) {
   const padY = Math.max((maxY - minY) * 0.1, Math.abs(maxY) * 0.01, 1);
   const xScale = (date) => left + ((date.getTime() - minX) / Math.max(maxX - minX, 1)) * (width - left - right);
   const yScale = (equity) => height - bottom - ((equity - minY + padY) / Math.max(maxY - minY + padY * 2, 1)) * (height - top - bottom);
-  const path = rows.map((row, index) => `${index ? "L" : "M"} ${xScale(row.date).toFixed(1)} ${yScale(row.equity).toFixed(1)}`).join(" ");
+  const points = rows
+    .map((row) => ({ x: xScale(row.date), y: yScale(row.equity) }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (points.length < 2) {
+    svg.appendChild(textEl({ x: width / 2, y: height / 2, "text-anchor": "middle", class: "empty-chart" }, `No ${BACKTEST_LABEL} chart`));
+    return;
+  }
+  const path = points.map((point, index) => `${index ? "L" : "M"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
   const color = rows.at(-1).equity >= rows[0].equity ? "#057a55" : "#b42318";
   const axisY = height - bottom;
   svg.appendChild(svgEl("line", { class: "axis-line", x1: left, y1: axisY, x2: width - right, y2: axisY }));
@@ -1561,7 +1854,12 @@ function switchTab(tabName) {
   });
   if (tabName === "dca") renderDca();
   if (tabName === "algorithm") activateAlgorithmView();
-  if (tabName === "options") renderOptionsDeck();
+  if (tabName === "options") {
+    renderOptionsDeck();
+    renderOptionsPower();
+    const signalKey = optionsUnderlyingStrategyKey();
+    if (signalKey !== "none") ensureSignals(signalKey);
+  }
 }
 
 async function savePlan(quiet = true) {
@@ -1597,6 +1895,7 @@ async function saveControlsOnly(options = {}) {
     state.bot = payload.bot || state.bot;
     updateFeatureToggles();
     renderAlgorithmPower();
+    renderOptionsPower();
     if (renderDecks) {
       renderAlgorithmDeck();
       renderOptionsDeck();
@@ -1617,24 +1916,8 @@ function wireEvents() {
     const card = event.target.closest("[data-strategy]");
     if (card) selectAlgorithmStrategy(card.dataset.strategy);
   });
-  $("#algorithmSignalCard")?.addEventListener("click", (event) => {
-    const universeButton = event.target.closest("[data-refresh-universe]");
-    if (universeButton) {
-      recommendUniverse();
-      return;
-    }
-    const applyUniverseButton = event.target.closest("[data-apply-universe]");
-    if (applyUniverseButton) {
-      applyUniverseProposal();
-      return;
-    }
-    const refreshButton = event.target.closest("[data-refresh-backtest]");
-    if (!refreshButton) return;
-    const strategyKey = refreshButton.dataset.refreshBacktest;
-    delete state.signals[strategyKey];
-    loadSignals(strategyKey);
-    loadBacktest(strategyKey, true);
-  });
+  $("#algorithmSignalCard")?.addEventListener("click", handleSignalCardClick);
+  $("#optionsSignalCard")?.addEventListener("click", handleSignalCardClick);
   $("#algorithmDeck")?.addEventListener("wheel", (event) => {
     event.preventDefault();
     shiftAlgorithmDeck(event.deltaY > 0 ? 1 : -1);
@@ -1655,6 +1938,21 @@ function wireEvents() {
     if (event.key === "ArrowDown") selectRelativeOptions(1);
     if (event.key === "ArrowUp") selectRelativeOptions(-1);
   });
+  $("#optionsPowerToggle")?.addEventListener("click", () => {
+    if (activeOptionsKey() === "none") {
+      state.controls.options_trading_enabled = false;
+      renderOptionsPower();
+      return;
+    }
+    state.controls.options_trading_enabled = !state.controls.options_trading_enabled;
+    renderOptionsPower();
+    saveControlsOnly({ renderDecks: false });
+  });
+  $("#optionsTradingAccount")?.addEventListener("change", (event) => {
+    state.controls.options_trading_account_id = event.target.value;
+    renderOptionsPower();
+    saveControlsOnly({ renderDecks: false });
+  });
   $("#scheduleToggle")?.addEventListener("click", () => {
     if (!state.dca?.plan) return;
     state.dca.plan.enabled = !state.dca.plan.enabled;
@@ -1664,12 +1962,10 @@ function wireEvents() {
   $("#algorithmPowerToggle")?.addEventListener("click", () => {
     if (activeAlgorithmKey() === "none") {
       state.controls.algorithm_enabled = false;
-      state.controls.algorithm_power_confirmed = false;
       renderAlgorithmPower();
       return;
     }
     state.controls.algorithm_enabled = !state.controls.algorithm_enabled;
-    state.controls.algorithm_power_confirmed = state.controls.algorithm_enabled;
     renderAlgorithmPower();
     saveControlsOnly({ renderDecks: false });
   });
@@ -1728,10 +2024,30 @@ function wireEvents() {
   });
 }
 
+function handleSignalCardClick(event) {
+  const universeButton = event.target.closest("[data-refresh-universe]");
+  if (universeButton) {
+    recommendUniverse();
+    return;
+  }
+  const applyUniverseButton = event.target.closest("[data-apply-universe]");
+  if (applyUniverseButton) {
+    applyUniverseProposal();
+    return;
+  }
+  const refreshButton = event.target.closest("[data-refresh-backtest]");
+  if (!refreshButton) return;
+  const strategyKey = refreshButton.dataset.refreshBacktest;
+  delete state.signals[strategyKey];
+  loadSignals(strategyKey);
+  loadBacktest(strategyKey, true);
+}
+
 async function init() {
   wireEvents();
   renderAlgorithmDeck();
   renderOptionsDeck();
+  renderOptionsPower();
   renderStaticBubbles();
   try {
     const [statusPayload, universePayload, dcaPayload, controlsPayload] = await Promise.all([
@@ -1750,6 +2066,9 @@ async function init() {
     hydrateStoredBacktests();
     renderDca();
     renderAlgorithmDeck();
+    renderOptionsDeck();
+    renderOptionsPower();
+    renderOptionsSignals();
     loadCachedBacktestsForDeck();
   } catch (error) {
     showToast(`Could not load DCA data: ${error.message}`);

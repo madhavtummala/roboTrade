@@ -29,7 +29,7 @@ def test_dca_payload_returns_plan_and_preview_shape() -> None:
     assert "plan" in payload
     assert "available" in payload
     assert "preview" in payload
-    assert {"enabled", "frequency", "accumulate", "sell"} <= set(payload["plan"])
+    assert {"enabled", "frequency", "buy", "sell"} <= set(payload["plan"])
 
 
 def test_controls_payload_returns_switches() -> None:
@@ -51,5 +51,13 @@ def test_frontend_uses_six_month_backtests_and_refresh_button() -> None:
     assert "cumulative turnover" in app_js
     assert "chart-crosshair" in app_js
     assert "Invested ${money(row.invested)}" in app_js
+    assert "optionsPowerToggle" in app_js
+    assert "Turn options bot off before changing strategies" in app_js
+    assert "optionsPowerToggle" in index_html
+    assert "optionsRuntimeStatus" not in index_html
+    assert "function renderSignalBacktestCard" in app_js
+    assert "optionsBacktestChart" in app_js
+    assert "handleSignalCardClick" in app_js
+    assert 'if (optionsKey === "options_swing_dual_momentum") return "dual_momentum";' in app_js
     assert "Running" not in app_js
     assert "app.js?v=20260521-universe-review" in index_html

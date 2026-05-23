@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 from .config import get_config
+from .connectors import fetch_latest_market_quotes, fetch_latest_news_sentiment, merge_social_frames, news_records_to_social_frames
 from .controls import load_controls
 from .alpaca_client import (
     create_data_client,
@@ -16,6 +17,7 @@ from .portfolio import compute_target_weights
 from .signals import compute_signals_for_universe
 from .social import load_social_trends_csv
 from .strategy_models import STRATEGY_LABELS, strategy_signal_rows, weights_from_strategy_rows
+from .user_dual_momentum import UserDualMomentumConfig, build_user_dual_momentum_targets
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +95,52 @@ def run_once(account_id: str | None = None) -> None:
         logger.info("Algorithm sizing equity capped at %.2f from account equity %.2f", equity, account_equity)
     current_positions = get_positions(trading_client)
 
+    user_dual_config = UserDualMomentumConfig.from_runtime_config(config)
+    if strategy == "user_dual_momentum":
+        price_symbols = sorted(set(user_dual_config.symbols) | set(current_positions))
+    else:
+        price_symbols = sorted(set(config.symbols) | set(current_positions))
+    latest_quotes = fetch_latest_market_quotes(price_symbols, config, data_client=data_client)
+    latest_prices = {}
+    for symbol in price_symbols:
+        quote = latest_quotes.get(symbol)
+        latest_prices[symbol] = (
+            float(quote["price"])
+            if quote and quote.get("price")
+            else get_latest_price(symbol, data_client, data_feed=config.alpaca_data_feed)
+        )
+
+    if strategy == "user_dual_momentum":
+        if "paper-api.alpaca.markets" not in str(config.alpaca_base_url):
+            logger.warning(
+                "Intraday Social Dual Momentum is restricted to Alpaca paper trading by default. "
+                "Configured endpoint %s is not paper; exiting without orders.",
+                config.alpaca_base_url,
+            )
+            return
+        target_weights, signals, metadata = build_user_dual_momentum_targets(
+            config,
+            data_client,
+            current_positions,
+            latest_prices,
+            equity,
+        )
+        logger.info("Intraday Social Dual Momentum metadata: %s", metadata)
+        log_signals(signals, latest_prices)
+        log_portfolio(target_weights, equity)
+        order_results = sync_positions_to_targets(
+            trading_client,
+            latest_prices,
+            current_positions,
+            target_weights,
+            equity,
+            cash_buffer=0.0,
+            min_trade_dollars=user_dual_config.per_trade_value_min,
+            rebalance_threshold=0.0,
+        )
+        log_orders(order_results)
+        return
+
     bars_by_symbol = fetch_daily_bars(
         config.symbols,
         config.momentum_lookback_days,
@@ -100,9 +148,14 @@ def run_once(account_id: str | None = None) -> None:
         extra_buffer_days=config.history_extra_buffer_days,
         alpaca_data_client=data_client,
         data_feed=config.alpaca_data_feed,
+        include_latest=True,
+        config=config,
     )
     if strategy == "momentum_social":
-        social_by_symbol = load_social_trends_csv(config.social_trends_csv, config.symbols)
+        social_by_symbol = merge_social_frames(
+            load_social_trends_csv(config.social_trends_csv, config.symbols),
+            news_records_to_social_frames(fetch_latest_news_sentiment(config.symbols, config)),
+        )
         signals = compute_signals_for_universe(
             bars_by_symbol,
             config.momentum_lookback_days,
@@ -133,12 +186,6 @@ def run_once(account_id: str | None = None) -> None:
             max_weight_per_symbol=config.max_weight_per_symbol,
             max_portfolio_exposure=_max_live_exposure(config),
         )
-    price_symbols = sorted(set(config.symbols) | set(current_positions))
-    latest_prices = {
-        symbol: get_latest_price(symbol, data_client, data_feed=config.alpaca_data_feed)
-        for symbol in price_symbols
-    }
-
     log_signals(signals, latest_prices)
     log_portfolio(target_weights, equity)
     order_results = sync_positions_to_targets(

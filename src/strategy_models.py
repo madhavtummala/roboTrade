@@ -13,7 +13,7 @@ STRATEGY_LABELS = {
     "breakout": "Breakout",
     "risk_parity": "Risk Parity",
     "dual_momentum": "Dual Momentum",
-    "user_dual_momentum": "User ETF Dual Momentum",
+    "user_dual_momentum": "Intraday Social Dual Momentum",
 }
 
 USER_DUAL_MOMENTUM_DEFENSIVE_SYMBOLS = {"BIL", "SHY", "BND", "AGG", "IUSB", "IEF", "TLT"}
@@ -193,7 +193,7 @@ def _rank_user_dual_momentum_rows(rows: list[dict[str, Any]]) -> list[dict[str, 
             if row["symbol"] in selected_symbols:
                 row["side"] = "LONG"
                 row["signal"] = 1
-                row["reason"] = "Clears BIL hurdle and ranks in the top risk-on sleeve"
+                row["reason"] = "Risk-on rank"
         return sorted(rows, key=lambda item: (item["signal"] != 1, -_finite(item.get("score"))))
 
     available_defensive = {

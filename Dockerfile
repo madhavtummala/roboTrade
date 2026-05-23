@@ -4,8 +4,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
     TRADING_CONFIG_FILE=/config/trading_bot.yaml \
+    TRADING_ACCOUNTS_FILE=/config/accounts.yaml \
+    TRADING_CONNECTORS_FILE=/config/connectors.yaml \
+    TRADING_ALGORITHM_BOT_FILE=/config/algorithm_bot.yaml \
+    TRADING_OPTIONS_BOT_FILE=/config/options_bot.yaml \
+    TRADING_DCA_BOT_FILE=/config/dca_bot.yaml \
+    TRADING_UNIVERSE_FILE=/config/universe.yaml \
     STATE_DB_PATH=/data/trading_bot.sqlite \
-    TRADABLES_CSV=/app/tradable_etfs.csv \
+    TRADABLES_CSV=/app/data/tradable_etfs.csv \
     ALPHA_VANTAGE_NEWS_CSV=/data/social_trends.csv \
     LOG_FILE=/logs/trading.log
 
@@ -23,8 +29,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
 COPY web ./web
-COPY tradable_etfs.csv ./tradable_etfs.csv
-COPY deploy/examples/trading_bot.yaml /config/trading_bot.yaml
+COPY data/tradable_etfs.csv ./data/tradable_etfs.csv
+COPY --chown=app:app deploy/examples/trading_bot.yaml /config/trading_bot.yaml
+COPY --chown=app:app deploy/examples/accounts.yaml /config/accounts.yaml
+COPY --chown=app:app deploy/examples/connectors.yaml /config/connectors.yaml
+COPY --chown=app:app deploy/examples/algorithm_bot.yaml /config/algorithm_bot.yaml
+COPY --chown=app:app deploy/examples/options_bot.yaml /config/options_bot.yaml
+COPY --chown=app:app deploy/examples/dca_bot.yaml /config/dca_bot.yaml
+COPY --chown=app:app deploy/examples/universe.yaml /config/universe.yaml
 
 USER app
 EXPOSE 8000

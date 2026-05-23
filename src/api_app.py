@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import Body, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +32,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "web"
 
 
+def _cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "*")
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or ["*"]
+
+
 class NoCacheStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
@@ -37,26 +45,25 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
-app = FastAPI(title="Trading Bot API")
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    bot_runtime.start()
+    try:
+        yield
+    finally:
+        bot_runtime.stop()
+
+
+app = FastAPI(title="Trading Bot API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.mount("/static", NoCacheStaticFiles(directory=WEB_ROOT / "static"), name="static")
-
-
-@app.on_event("startup")
-def start_bot_runtime() -> None:
-    bot_runtime.start()
-
-
-@app.on_event("shutdown")
-def stop_bot_runtime() -> None:
-    bot_runtime.stop()
 
 
 @app.get("/", include_in_schema=False)

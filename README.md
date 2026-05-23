@@ -2,7 +2,7 @@
 
 A Docker-ready FastAPI dashboard and trading bot for Alpaca. It supports DCA planning, strategy signal inspection, cached 6-month backtests, and a trading runner built around a configurable tradable universe.
 
-This is research infrastructure, not a profit guarantee. Point `ALPACA_BASE_URL` at the account endpoint you intend to use, review generated orders, and use `KILL_SWITCH=true` whenever you want the app to be read-only.
+This is research infrastructure, not a profit guarantee. Point each account in `accounts.yaml` at the Alpaca endpoint you intend to use, review generated orders, and use `KILL_SWITCH=true` whenever you want the app to be read-only.
 
 ## What Runs In The Container
 
@@ -14,10 +14,10 @@ uvicorn src.api_app:app --host 0.0.0.0 --port 8000
 
 The image intentionally does not include your secrets, SQLite state, logs, or generated social data. Provide those at runtime:
 
-- `/config` - mounted writable YAML config, normally `trading_bot.yaml`
+- `/config` - mounted writable YAML config: `trading_bot.yaml`, `accounts.yaml`, `connectors.yaml`, `algorithm_bot.yaml`, `options_bot.yaml`, `dca_bot.yaml`, and `universe.yaml`
 - `/data` - mounted writable app state, SQLite DB, cached backtests, and optional social trend CSV
 - `/logs` - mounted writable logs
-- environment variables or `.env` - Alpaca keys and runtime paths
+- environment variables or `.env` - runtime paths and non-secret toggles
 
 ## Runtime Files
 
@@ -27,6 +27,12 @@ Create this layout on the machine that will run the app:
 runtime/
   config/
     trading_bot.yaml
+    accounts.yaml
+    connectors.yaml
+    algorithm_bot.yaml
+    options_bot.yaml
+    dca_bot.yaml
+    universe.yaml
   data/
   logs/
 .env
@@ -38,15 +44,19 @@ Starter examples are in `deploy/examples/`:
 mkdir -p runtime/config runtime/data runtime/logs
 cp deploy/examples/env.example .env
 cp deploy/examples/trading_bot.yaml runtime/config/trading_bot.yaml
+cp deploy/examples/accounts.yaml runtime/config/accounts.yaml
+cp deploy/examples/connectors.yaml runtime/config/connectors.yaml
+cp deploy/examples/algorithm_bot.yaml runtime/config/algorithm_bot.yaml
+cp deploy/examples/options_bot.yaml runtime/config/options_bot.yaml
+cp deploy/examples/dca_bot.yaml runtime/config/dca_bot.yaml
+cp deploy/examples/universe.yaml runtime/config/universe.yaml
 ```
 
-Edit `.env` and replace the Alpaca values:
+Edit `runtime/config/accounts.yaml` and `runtime/config/connectors.yaml` with your account and provider API keys. The empty examples are safe defaults; `deploy/examples/accounts.with-keys.example.yaml` and `deploy/examples/connectors.with-keys.example.yaml` show the direct-key schema.
+
+Edit `.env` for runtime toggles:
 
 ```bash
-ALPACA_API_KEY=your_key_here
-ALPACA_API_SECRET=your_secret_here
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-ALPACA_DATA_FEED=iex
 KILL_SWITCH=false
 ```
 
@@ -55,13 +65,21 @@ The provided Docker setup uses these container paths:
 ```bash
 STATE_DB_PATH=/data/trading_bot.sqlite
 TRADING_CONFIG_FILE=/config/trading_bot.yaml
+TRADING_ACCOUNTS_FILE=/config/accounts.yaml
+TRADING_CONNECTORS_FILE=/config/connectors.yaml
+TRADING_ALGORITHM_BOT_FILE=/config/algorithm_bot.yaml
+TRADING_OPTIONS_BOT_FILE=/config/options_bot.yaml
+TRADING_DCA_BOT_FILE=/config/dca_bot.yaml
+TRADING_UNIVERSE_FILE=/config/universe.yaml
+TRADABLES_CSV=/app/data/tradable_etfs.csv
 ALPHA_VANTAGE_NEWS_CSV=/data/social_trends.csv
 LOG_FILE=/logs/trading.log
+CORS_ALLOW_ORIGINS=*
 ```
 
 Do not commit `.env`, `runtime/`, `config/`, `data/*.sqlite`, logs, or generated social/backtest files. They are ignored by `.gitignore`.
 
-The master tradables file is bundled inside the image at `/app/tradable_etfs.csv`. The smaller deployment universe lives directly in `trading_bot.yaml` under `tradable_universe.symbols`, and dashboard universe refreshes write back to that YAML file. Social trends are app-managed/generated data in `/data/social_trends.csv`; users are not expected to provide them as ground truth.
+The master tradables file is bundled inside the image at `/app/data/tradable_etfs.csv`. The smaller deployment universe lives in `universe.yaml` under `tradable_universe.symbols`, and dashboard universe refreshes write back to that YAML file. Algorithm controls and strategy knobs live in `algorithm_bot.yaml`; options controls and strategy knobs live in `options_bot.yaml`; DCA scheduling and planning lives in `dca_bot.yaml`; account keys live in `accounts.yaml`; connector keys live in `connectors.yaml`. Social trends are app-managed/generated data in `/data/social_trends.csv`; users are not expected to provide them as ground truth.
 
 ## Run Locally With Docker Compose
 
@@ -205,29 +223,33 @@ docker run --rm \
   python -m src.live_runner
 ```
 
-For normal use, leave the dashboard running and use the DCA or Algorithm tab power buttons to control the backend bot loops. Keep `KILL_SWITCH=true` until you are ready for order submission.
+For normal use, leave the dashboard running and use the DCA, Algorithm, or Options tab power buttons to control the backend bot loops. Keep `KILL_SWITCH=true` until you are ready for order submission.
 
 ## Configuration Reference
 
-Required for Alpaca:
-
-```bash
-ALPACA_API_KEY=
-ALPACA_API_SECRET=
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-ALPACA_DATA_FEED=iex
-KILL_SWITCH=false
-```
-
-`ALPACA_BASE_URL` controls where trading calls are sent; the example points at Alpaca's paper endpoint. Change it only when you intentionally want a different brokerage endpoint. `KILL_SWITCH=true` keeps the app able to show data/backtests/signals while preventing the trading runner from submitting orders. `ALPACA_DATA_FEED=iex` requests Alpaca's IEX market data feed; change it only if your Alpaca plan and account are configured for another feed.
-
-YAML config:
+Config file paths:
 
 ```bash
 TRADING_CONFIG_FILE=/config/trading_bot.yaml
+TRADING_ACCOUNTS_FILE=/config/accounts.yaml
+TRADING_CONNECTORS_FILE=/config/connectors.yaml
+TRADING_ALGORITHM_BOT_FILE=/config/algorithm_bot.yaml
+TRADING_OPTIONS_BOT_FILE=/config/options_bot.yaml
+TRADING_DCA_BOT_FILE=/config/dca_bot.yaml
+TRADING_UNIVERSE_FILE=/config/universe.yaml
+KILL_SWITCH=false
+CORS_ALLOW_ORIGINS=*
 ```
 
-`trading_bot.yaml` contains account placeholders, `tradable_universe.symbols`, and nested knobs for each server-side algorithm. `TRADABLES_CSV` defaults to the internal `/app/tradable_etfs.csv` in Docker. Override it only if you intentionally want a custom master tradables file.
+`KILL_SWITCH=true` keeps the app able to show data/backtests/signals while preventing the trading runner from submitting orders.
+
+For a public or reverse-proxied deployment, set `CORS_ALLOW_ORIGINS` to the exact dashboard origin, for example `https://trading.example.com`. Leave it as `*` only for trusted local/LAN access.
+
+YAML config:
+
+`trading_bot.yaml` contains global runtime settings such as `kill_switch` and `log_file`. `algorithm_bot.yaml` contains the algorithm bot power state, selected equity strategy, trading account id, refresh cadence, and nested knobs for each server-side algorithm. `options_bot.yaml` contains the options bot power state, selected options strategy, options account id, and options strategy knobs. `dca_bot.yaml` contains DCA scheduling and the DCA plan. `universe.yaml` contains `tradable_universe.symbols` and optional `master_list`. `accounts.yaml` contains brokerage accounts with direct `api_key` / `api_secret` values. `connectors.yaml` contains market/news providers and direct connector API keys; fallback order follows the order of entries under each `providers` mapping unless you add an explicit `provider_order`. `TRADABLES_CSV` still overrides the master-list path from the environment if set.
+
+By default, `accounts.yaml` and `connectors.yaml` are empty arrays, so the container expects you to mount filled versions. Raw provider responses, short-lived cache entries, and provider limit state are stored in the SQLite DB under `STATE_DB_PATH`.
 
 Risk controls:
 
@@ -245,10 +267,9 @@ ALGORITHM_EQUITY_CAP=0
 
 `BACKTEST_STARTING_EQUITY` is the simulated cash account size used by backtests. `ALGORITHM_EQUITY_CAP` is optional for live/paper order sizing; leave it at `0` to use the full account equity, or set it to a dollar amount such as `10000` to cap algorithm sizing to that amount.
 
-Optional Alpha Vantage support for app-managed social data:
+Optional Alpha Vantage settings for app-managed social data:
 
 ```bash
-ALPHA_VANTAGE_API_KEY=
 ALPHA_VANTAGE_NEWS_CSV=/data/social_trends.csv
 ALPHA_VANTAGE_NEWS_LOOKBACK_DAYS=30
 ALPHA_VANTAGE_NEWS_LIMIT=50
@@ -276,7 +297,14 @@ Create `.env` in the project root. For local non-Docker development, paths may s
 
 ```bash
 TRADING_CONFIG_FILE=config/trading_bot.yaml
+TRADING_ACCOUNTS_FILE=config/accounts.yaml
+TRADING_CONNECTORS_FILE=config/connectors.yaml
+TRADING_ALGORITHM_BOT_FILE=config/algorithm_bot.yaml
+TRADING_OPTIONS_BOT_FILE=config/options_bot.yaml
+TRADING_DCA_BOT_FILE=config/dca_bot.yaml
+TRADING_UNIVERSE_FILE=config/universe.yaml
 STATE_DB_PATH=data/trading_bot.sqlite
+ALPHA_VANTAGE_NEWS_CSV=data/social_trends.csv
 LOG_FILE=logs/trading.log
 ```
 
@@ -297,6 +325,9 @@ pytest
 - `src/api_app.py` - FastAPI API and static web app server
 - `src/api_payloads.py` - API payload builders, cached backtests, signals, and config updates
 - `src/config.py` - YAML-first runtime config
+- `src/connectors.py` - market-data and news/sentiment provider connectors with fallback
+- `src/provider_cache.py` - SQLite cache and provider limit state
+- `src/dual_momentum_optimizer.py` - dual-momentum config and universe experiment runner
 - `src/state_store.py` - SQLite state persistence
 - `src/dca.py` - DCA plan validation and allocation preview
 - `src/signals.py` - momentum/social signal engine

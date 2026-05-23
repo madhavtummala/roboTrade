@@ -8,17 +8,20 @@ def test_sanitize_controls_defaults_and_bools() -> None:
 
     assert controls == {
         "trading_account_id": "",
+        "equities": {"enabled": False, "strategy": "momentum_social"},
+        "options": {"enabled": False, "strategy": "none", "account_id": ""},
+        "algorithm": {"enabled": False, "strategy": "momentum_social"},
+        "options_trading": {"enabled": False, "strategy": "none", "account_id": ""},
         "algorithm_enabled": False,
-        "algorithm_power_confirmed": False,
-        "options_trading_enabled": True,
+        "options_trading_enabled": False,
         "active_strategy": "momentum_social",
-        "backtest_strategy": "",
         "options_strategy": "none",
+        "options_trading_account_id": "",
     }
 
 
 def test_save_and_load_controls(tmp_path) -> None:
-    controls_path = tmp_path / "controls.json"
+    controls_path = tmp_path / "controls.yaml"
 
     saved = save_controls(
         {"algorithm_enabled": False, "options_trading_enabled": True, "active_strategy": "breakout"},
@@ -27,19 +30,70 @@ def test_save_and_load_controls(tmp_path) -> None:
 
     assert saved == load_controls(path=str(controls_path))
     assert saved["active_strategy"] == "breakout"
+    saved_yaml = controls_path.read_text(encoding="utf-8")
+    assert "algorithmic_trading:" in saved_yaml
+    assert "equities:" in saved_yaml
+    assert "options:" in saved_yaml
+    assert "trading_controls:" not in saved_yaml
 
 
-def test_old_algorithm_enabled_state_migrates_to_power_off() -> None:
+def test_save_and_load_controls_uses_split_bot_files(tmp_path, monkeypatch) -> None:
+    algorithm_bot_path = tmp_path / "algorithm_bot.yaml"
+    options_bot_path = tmp_path / "options_bot.yaml"
+    monkeypatch.setenv("TRADING_ALGORITHM_BOT_FILE", str(algorithm_bot_path))
+    monkeypatch.setenv("TRADING_OPTIONS_BOT_FILE", str(options_bot_path))
+
+    saved = save_controls(
+        {
+            "trading_account_id": "paper-equities",
+            "equities": {"enabled": True, "strategy": "breakout"},
+            "options": {
+                "enabled": True,
+                "strategy": "options_swing_dual_momentum",
+                "account_id": "paper-options",
+            },
+        }
+    )
+
+    loaded = load_controls()
+
+    assert loaded == saved
+    assert "algorithm_bot:" in algorithm_bot_path.read_text(encoding="utf-8")
+    assert "options_bot:" in options_bot_path.read_text(encoding="utf-8")
+    assert "algorithmic_trading:" not in algorithm_bot_path.read_text(encoding="utf-8")
+
+
+def test_old_algorithm_enabled_state_still_loads() -> None:
     controls = sanitize_controls({"algorithm_enabled": True, "active_strategy": "breakout"})
 
-    assert controls["algorithm_enabled"] is False
-    assert controls["algorithm_power_confirmed"] is False
+    assert controls["algorithm_enabled"] is True
+    assert controls["equities"]["strategy"] == "breakout"
+    assert controls["algorithm"]["strategy"] == "breakout"
 
 
-def test_load_controls_tolerates_trailing_corruption(tmp_path) -> None:
-    controls_path = tmp_path / "controls.json"
+def test_new_equities_and_options_sections_load() -> None:
+    controls = sanitize_controls(
+        {
+            "equities": {"enabled": True, "strategy": "risk_parity"},
+            "options": {"enabled": True, "strategy": "protective_put", "account_id": "paper-options"},
+        }
+    )
+
+    assert controls["active_strategy"] == "risk_parity"
+    assert controls["algorithm_enabled"] is True
+    assert controls["options_strategy"] == "protective_put"
+    assert controls["options_trading_enabled"] is True
+    assert controls["options_trading_account_id"] == "paper-options"
+
+
+def test_load_controls_reads_direct_yaml_mapping(tmp_path) -> None:
+    controls_path = tmp_path / "controls.yaml"
     controls_path.write_text(
-        '{"active_strategy": "none", "algorithm_enabled": false, "options_trading_enabled": false}junk',
+        """
+active_strategy: none
+algorithm_enabled: false
+options_trading_enabled: false
+""",
         encoding="utf-8",
     )
 

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import json
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
 
-from .state_store import load_state, save_state
-from .universe import resolve_project_path
+from .config import load_dca_config, load_raw_config, save_dca_config
 
-DCA_PLAN_PATH = "data/dca_plan.json"
-DCA_PLAN_STATE_KEY = "dca_plan"
+DCA_PLAN_SECTION = "dca_plan"
 DCA_MAX_ITEM_AMOUNT = 50.0
 
 DEFAULT_DCA_PLAN: dict[str, Any] = {
@@ -18,8 +14,7 @@ DEFAULT_DCA_PLAN: dict[str, Any] = {
     "schedule_pattern": "0 12 * * 1-5",
     "next_run_date": "",
     "max_item_amount": DCA_MAX_ITEM_AMOUNT,
-    "accumulate": {
-        "enabled": True,
+    "buy": {
         "amount": 100.0,
         "items": [
             {"symbol": "SPY", "amount": 25.0},
@@ -29,14 +24,14 @@ DEFAULT_DCA_PLAN: dict[str, Any] = {
         ],
     },
     "sell": {
-        "enabled": False,
         "amount": 0.0,
         "items": [],
     },
 }
 
 FREQUENCIES = {"daily", "weekly", "biweekly", "monthly"}
-BUCKETS = ("accumulate", "sell")
+BUCKETS = ("buy", "sell")
+LEGACY_BUCKETS = {"accumulate": "buy"}
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -55,14 +50,6 @@ def _as_float(value: Any, default: float = 0.0) -> float:
     return max(parsed, 0.0)
 
 
-def _as_unit_float(value: Any, default: float = 0.0) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    return min(max(parsed, -1.0), 1.0)
-
-
 def _universe_lookup(universe_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(row["symbol"]).upper(): row for row in universe_rows if row.get("symbol")}
 
@@ -71,10 +58,14 @@ def sanitize_dca_plan(plan: dict[str, Any] | None, universe_rows: list[dict[str,
     """Normalize a DCA plan and keep only symbols present in the configured universe."""
     raw_plan = deepcopy(DEFAULT_DCA_PLAN)
     if plan:
-        raw_plan.update({key: value for key, value in plan.items() if key not in BUCKETS})
+        ignored_bucket_keys = set(BUCKETS) | set(LEGACY_BUCKETS)
+        raw_plan.update({key: value for key, value in plan.items() if key not in ignored_bucket_keys})
         for bucket in BUCKETS:
             if isinstance(plan.get(bucket), dict):
                 raw_plan[bucket].update(plan[bucket])
+        for old_bucket, new_bucket in LEGACY_BUCKETS.items():
+            if isinstance(plan.get(old_bucket), dict):
+                raw_plan[new_bucket].update(plan[old_bucket])
 
     universe = _universe_lookup(universe_rows)
     sanitized = {
@@ -106,20 +97,11 @@ def sanitize_dca_plan(plan: dict[str, Any] | None, universe_rows: list[dict[str,
             )
             sanitized_item = {
                 "symbol": symbol,
-                "name": universe[symbol].get("name", ""),
-                "bucket": universe[symbol].get("bucket", ""),
                 "amount": amount,
             }
-            position = item.get("position")
-            if isinstance(position, dict) and ("x" in position or "y" in position):
-                sanitized_item["position"] = {
-                    "x": _as_unit_float(position.get("x")),
-                    "y": _as_unit_float(position.get("y")),
-                }
             items.append(sanitized_item)
 
         sanitized[bucket] = {
-            "enabled": _as_bool(bucket_plan.get("enabled"), default=bucket == "accumulate"),
             "amount": sum(item["amount"] for item in items),
             "items": items,
         }
@@ -127,28 +109,41 @@ def sanitize_dca_plan(plan: dict[str, Any] | None, universe_rows: list[dict[str,
     return sanitized
 
 
-def load_dca_plan(universe_rows: list[dict[str, Any]], path: str = DCA_PLAN_PATH) -> dict[str, Any]:
-    if path == DCA_PLAN_PATH:
-        return sanitize_dca_plan(load_state(DCA_PLAN_STATE_KEY, DEFAULT_DCA_PLAN, legacy_path=DCA_PLAN_PATH), universe_rows)
+def _raw_plan_from_config(raw_config: dict[str, Any]) -> dict[str, Any]:
+    bot_section = raw_config.get("dca_bot")
+    if isinstance(bot_section, dict):
+        section = bot_section.get(DCA_PLAN_SECTION)
+        if isinstance(section, dict):
+            return section
+        if any(key in bot_section for key in DEFAULT_DCA_PLAN):
+            return bot_section
+    section = raw_config.get(DCA_PLAN_SECTION)
+    if isinstance(section, dict):
+        return section
+    if any(key in raw_config for key in DEFAULT_DCA_PLAN):
+        return raw_config
+    return DEFAULT_DCA_PLAN
 
-    plan_path = resolve_project_path(path)
-    if not plan_path.exists():
-        return sanitize_dca_plan(DEFAULT_DCA_PLAN, universe_rows)
 
-    with plan_path.open(encoding="utf-8") as handle:
-        raw_plan = json.load(handle)
-    return sanitize_dca_plan(raw_plan, universe_rows)
+def load_dca_plan(universe_rows: list[dict[str, Any]], path: str | None = None) -> dict[str, Any]:
+    raw_config = load_dca_config(path)
+    if not raw_config:
+        raw_config = load_raw_config()
+    return sanitize_dca_plan(_raw_plan_from_config(raw_config), universe_rows)
 
 
-def save_dca_plan(plan: dict[str, Any], universe_rows: list[dict[str, Any]], path: str = DCA_PLAN_PATH) -> dict[str, Any]:
+def save_dca_plan(plan: dict[str, Any], universe_rows: list[dict[str, Any]], path: str | None = None) -> dict[str, Any]:
     sanitized = sanitize_dca_plan(plan, universe_rows)
-    if path == DCA_PLAN_PATH:
-        save_state(DCA_PLAN_STATE_KEY, sanitized)
-        return sanitized
-
-    plan_path = resolve_project_path(path)
-    plan_path.parent.mkdir(parents=True, exist_ok=True)
-    plan_path.write_text(json.dumps(sanitized, indent=2, sort_keys=True), encoding="utf-8")
+    raw_config = load_dca_config(path)
+    if path is None:
+        dca_bot = raw_config.setdefault("dca_bot", {})
+        if not isinstance(dca_bot, dict):
+            dca_bot = {}
+            raw_config["dca_bot"] = dca_bot
+        dca_bot[DCA_PLAN_SECTION] = sanitized
+    else:
+        raw_config[DCA_PLAN_SECTION] = sanitized
+    save_dca_config(raw_config, path)
     return sanitized
 
 
@@ -162,7 +157,7 @@ def allocation_preview(plan: dict[str, Any]) -> list[dict[str, Any]]:
         bucket_plan = plan.get(bucket, {})
         items = bucket_plan.get("items", [])
         bucket_total = sum(_as_float(item.get("amount")) for item in items)
-        if not bucket_plan.get("enabled") or bucket_total <= 0 or not items:
+        if bucket_total <= 0 or not items:
             continue
 
         for index, item in enumerate(items):
@@ -173,10 +168,10 @@ def allocation_preview(plan: dict[str, Any]) -> list[dict[str, Any]]:
             rows.append(
                 {
                     "bucket": bucket,
-                    "action": "buy" if bucket == "accumulate" else "sell",
+                    "action": bucket,
                     "symbol": item["symbol"],
-                    "name": item.get("name", ""),
-                    "theme": item.get("bucket", ""),
+                    "name": "",
+                    "theme": "",
                     "rank": index + 1,
                     "weight": weight,
                     "notional": notional,

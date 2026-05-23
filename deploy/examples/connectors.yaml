@@ -1,0 +1,9 @@
+data_sources:
+  market_data:
+    provider_order: []
+    cache_ttl_seconds: 1800
+    providers: []
+  news_sentiment:
+    provider_order: []
+    cache_ttl_seconds: 1800
+    providers: []

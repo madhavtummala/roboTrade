@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from math import floor
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .alpaca_client import create_data_client, create_trading_client, get_latest_price, submit_market_order
 from .config import get_config
@@ -14,9 +15,9 @@ from .dca import allocation_preview, load_dca_plan
 from .live_runner import run_once
 
 logger = logging.getLogger(__name__)
-
-CHECK_SECONDS = 300
-
+MARKET_TZ = ZoneInfo("America/Chicago")
+MARKET_OPEN_MINUTE = (8 * 60) + 30
+MARKET_CLOSE_MINUTE = 15 * 60
 
 @dataclass
 class RuntimeState:
@@ -27,13 +28,17 @@ class RuntimeState:
     last_finished_at: str | None = None
     last_error: str = ""
     last_run_date: str = ""
+    last_run_key: str = ""
 
 
 class _RuntimeLoop:
-    def __init__(self, name: str, enabled_fn, run_fn) -> None:
+    def __init__(self, name: str, enabled_fn, run_fn, interval_fn, run_key_fn=None, account_id_fn=None) -> None:
         self.name = name
         self._enabled_fn = enabled_fn
         self._run_fn = run_fn
+        self._interval_fn = interval_fn
+        self._run_key_fn = run_key_fn
+        self._account_id_fn = account_id_fn or (lambda controls: str(controls.get("trading_account_id") or ""))
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -63,34 +68,50 @@ class _RuntimeLoop:
         with self._lock:
             state = self._state.__dict__.copy()
         state["enabled"] = self._enabled_fn(controls)
-        state["account_id"] = str(controls.get("trading_account_id") or state.get("account_id") or "")
+        state["account_id"] = str(self._account_id_fn(controls) or state.get("account_id") or "")
         return state
 
     def _loop(self) -> None:
         while not self._stop.is_set():
             controls = load_controls()
-            account_id = str(controls.get("trading_account_id") or "")
+            account_id = str(self._account_id_fn(controls) or "")
             enabled = self._enabled_fn(controls)
             with self._lock:
                 self._state.enabled = enabled
                 self._state.account_id = account_id
-            if enabled and self._should_run_today():
-                self._run_guarded(account_id)
-            self._wake.wait(CHECK_SECONDS)
+            if enabled:
+                run_key = self._next_run_key()
+                if run_key is not None:
+                    self._run_guarded(account_id, run_key)
+            self._wake.wait(self._check_seconds())
             self._wake.clear()
 
-    def _should_run_today(self) -> bool:
-        today = date.today().isoformat()
-        with self._lock:
-            return self._state.last_run_date != today
+    def _check_seconds(self) -> int:
+        try:
+            return max(int(self._interval_fn()), 15)
+        except Exception:
+            return 300
 
-    def _run_guarded(self, account_id: str) -> None:
+    def _next_run_key(self) -> str | None:
+        if self._run_key_fn is None:
+            return ""
+        run_key = self._run_key_fn()
+        if not run_key:
+            return None
+        with self._lock:
+            if self._state.last_run_key == run_key:
+                return None
+        return str(run_key)
+
+    def _run_guarded(self, account_id: str, run_key: str) -> None:
         with self._lock:
             if self._state.running:
                 return
             self._state.running = True
             self._state.last_started_at = datetime.now(timezone.utc).isoformat()
             self._state.last_error = ""
+            if run_key:
+                self._state.last_run_key = run_key
         try:
             self._run_fn(account_id or None)
             with self._lock:
@@ -109,6 +130,15 @@ def _algorithm_enabled(controls: dict[str, Any]) -> bool:
     return bool(controls.get("algorithm_enabled")) and str(controls.get("active_strategy") or "none") != "none"
 
 
+def _options_enabled(controls: dict[str, Any]) -> bool:
+    config = get_config()
+    return (
+        bool(controls.get("options_trading_enabled"))
+        and str(controls.get("options_strategy") or "none") != "none"
+        and not config.kill_switch
+    )
+
+
 def _dca_enabled(_controls: dict[str, Any]) -> bool:
     config = get_config()
     from .api_payloads import universe_payload
@@ -119,6 +149,12 @@ def _dca_enabled(_controls: dict[str, Any]) -> bool:
 
 def _run_algorithm(account_id: str | None) -> None:
     run_once(account_id=account_id)
+
+
+def _run_options(account_id: str | None) -> None:
+    from .options_trader import run_options_once
+
+    run_options_once(account_id=account_id)
 
 
 def _run_dca(account_id: str | None) -> None:
@@ -148,21 +184,146 @@ def _run_dca(account_id: str | None) -> None:
         submit_market_order(trading_client, symbol, side, quantity)
 
 
+def _cron_field_matches(field: str, value: int, *, min_value: int, max_value: int) -> bool:
+    field = str(field or "*").strip()
+    if field == "*":
+        return True
+    for part in field.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        step = 1
+        if "/" in part:
+            part, raw_step = part.split("/", 1)
+            try:
+                step = max(int(raw_step), 1)
+            except ValueError:
+                return False
+        if part == "*":
+            start, end = min_value, max_value
+        elif "-" in part:
+            raw_start, raw_end = part.split("-", 1)
+            try:
+                start, end = int(raw_start), int(raw_end)
+            except ValueError:
+                return False
+        else:
+            try:
+                start = end = int(part)
+            except ValueError:
+                return False
+        if start <= value <= end and (value - start) % step == 0:
+            return True
+    return False
+
+
+def _cron_matches(pattern: str, now: datetime) -> bool:
+    fields = str(pattern or "").split()
+    if len(fields) != 5:
+        return False
+    minute, hour, day_of_month, month, day_of_week = fields
+    cron_dow = 0 if now.weekday() == 6 else now.weekday() + 1
+    return (
+        _cron_field_matches(minute, now.minute, min_value=0, max_value=59)
+        and _cron_field_matches(hour, now.hour, min_value=0, max_value=23)
+        and _cron_field_matches(day_of_month, now.day, min_value=1, max_value=31)
+        and _cron_field_matches(month, now.month, min_value=1, max_value=12)
+        and (
+            _cron_field_matches(day_of_week, cron_dow, min_value=0, max_value=7)
+            or (cron_dow == 0 and _cron_field_matches(day_of_week, 7, min_value=0, max_value=7))
+        )
+    )
+
+
+def _dca_run_key() -> str | None:
+    from .api_payloads import universe_payload
+
+    plan = load_dca_plan(universe_payload()["rows"])
+    now = datetime.now(MARKET_TZ).replace(second=0, microsecond=0)
+    if not _cron_matches(str(plan.get("schedule_pattern") or ""), now):
+        return None
+    return f"dca:{now.isoformat(timespec='minutes')}"
+
+
+def _is_regular_market_hours(now: datetime) -> bool:
+    local_now = now.astimezone(MARKET_TZ) if now.tzinfo else now.replace(tzinfo=MARKET_TZ)
+    if local_now.weekday() >= 5:
+        return False
+    minute_of_day = (local_now.hour * 60) + local_now.minute
+    return MARKET_OPEN_MINUTE <= minute_of_day < MARKET_CLOSE_MINUTE
+
+
+def _algorithm_bucket_key(now: datetime, refresh_minutes: int) -> str | None:
+    if not _is_regular_market_hours(now):
+        return None
+    refresh_minutes = max(int(refresh_minutes or 30), 1)
+    local_now = now.astimezone(MARKET_TZ) if now.tzinfo else now.replace(tzinfo=MARKET_TZ)
+    minute_of_day = (local_now.hour * 60) + local_now.minute
+    bucket_minute = (minute_of_day // refresh_minutes) * refresh_minutes
+    bucket_hour, bucket_minute = divmod(bucket_minute, 60)
+    bucket = local_now.replace(hour=bucket_hour, minute=bucket_minute, second=0, microsecond=0)
+    return f"algorithm:{bucket.isoformat(timespec='minutes')}"
+
+
+def _algorithm_run_key() -> str | None:
+    config = get_config()
+    return _algorithm_bucket_key(datetime.now(MARKET_TZ), config.algorithm_market_data_refresh_minutes)
+
+
+def _options_run_key() -> str | None:
+    return _algorithm_run_key()
+
+
+def _algorithm_check_seconds() -> int:
+    return get_config().algorithm_check_seconds
+
+
+def _options_check_seconds() -> int:
+    return get_config().algorithm_check_seconds
+
+
+def _options_account_id(controls: dict[str, Any]) -> str:
+    return str(controls.get("options_trading_account_id") or controls.get("trading_account_id") or "")
+
+
+def _dca_check_seconds() -> int:
+    return get_config().dca_check_seconds
+
+
 class BotRuntime:
     def __init__(self) -> None:
-        self.algorithm = _RuntimeLoop("algorithm", _algorithm_enabled, _run_algorithm)
-        self.dca = _RuntimeLoop("dca", _dca_enabled, _run_dca)
+        self.algorithm = _RuntimeLoop(
+            "algorithm",
+            _algorithm_enabled,
+            _run_algorithm,
+            _algorithm_check_seconds,
+            _algorithm_run_key,
+        )
+        self.options = _RuntimeLoop(
+            "options",
+            _options_enabled,
+            _run_options,
+            _options_check_seconds,
+            _options_run_key,
+            _options_account_id,
+        )
+        self.dca = _RuntimeLoop("dca", _dca_enabled, _run_dca, _dca_check_seconds, _dca_run_key)
 
     def start(self) -> None:
         self.algorithm.start()
+        self.options.start()
         self.dca.start()
 
     def stop(self) -> None:
         self.algorithm.stop()
+        self.options.stop()
         self.dca.stop()
 
     def wake_algorithm(self) -> None:
         self.algorithm.wake()
+
+    def wake_options(self) -> None:
+        self.options.wake()
 
     def wake_dca(self) -> None:
         self.dca.wake()
@@ -170,6 +331,7 @@ class BotRuntime:
     def snapshot(self) -> dict[str, Any]:
         return {
             "algorithm": self.algorithm.snapshot(),
+            "options": self.options.snapshot(),
             "dca": self.dca.snapshot(),
         }
 

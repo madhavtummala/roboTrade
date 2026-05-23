@@ -84,7 +84,7 @@ accounts:
     paper:
       label: Paper
 tradable_universe:
-  tradables_csv: {tradables_csv}
+  master_list: {tradables_csv}
   symbols:
     - SPY
 algorithms:
@@ -108,10 +108,32 @@ algorithms:
 
     assert payload["saved"] is True
     assert [row["symbol"] for row in payload["universe"]["rows"]] == ["SPY", "QQQ", "GLD"]
-    saved_yaml = config_yaml.read_text(encoding="utf-8")
+    saved_yaml = (tmp_path / "universe.yaml").read_text(encoding="utf-8")
     assert "- SPY" in saved_yaml
     assert "- QQQ" in saved_yaml
     assert "- GLD" in saved_yaml
+
+
+def test_apply_universe_payload_accepts_symbols_without_master_csv(tmp_path, monkeypatch) -> None:
+    config_yaml = tmp_path / "trading_bot.yaml"
+    config_yaml.write_text(
+        """
+tradable_universe:
+  master_list: missing_tradables.csv
+  symbols:
+    - SPY
+algorithms:
+  momentum_social:
+    momentum_lookback_days: 63
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TRADING_CONFIG_FILE", str(config_yaml))
+    monkeypatch.delenv("TRADABLES_CSV", raising=False)
+
+    payload = api_payloads.apply_universe_payload({"symbols": ["AAA", "BBB", "CCC"]})
+
+    assert [row["symbol"] for row in payload["universe"]["rows"]] == ["AAA", "BBB", "CCC"]
 
 
 def test_recommend_universe_payload_scores_fresh_candidates(tmp_path, monkeypatch) -> None:
@@ -129,7 +151,7 @@ accounts:
     paper:
       label: Paper
 tradable_universe:
-  tradables_csv: {tradables_csv}
+  master_list: {tradables_csv}
   symbols:
     - SPY
 algorithms:
@@ -160,13 +182,38 @@ def test_dca_payload_returns_plan_and_preview_shape() -> None:
     assert "plan" in payload
     assert "available" in payload
     assert "preview" in payload
-    assert {"enabled", "frequency", "accumulate", "sell"} <= set(payload["plan"])
+    assert {"enabled", "frequency", "buy", "sell"} <= set(payload["plan"])
 
 
 def test_controls_payload_returns_persisted_choices() -> None:
     payload = controls_payload()
 
-    assert {"algorithm_enabled", "options_trading_enabled", "active_strategy", "backtest_strategy", "options_strategy"} <= set(payload["controls"])
+    assert {"equities", "options", "algorithm_enabled", "options_trading_enabled", "active_strategy", "options_strategy"} <= set(payload["controls"])
+    assert {"algorithm", "options", "dca"} <= set(payload["bot"])
+
+
+def test_save_controls_payload_wakes_options_runtime(tmp_path, monkeypatch) -> None:
+    woke = {"algorithm": 0, "options": 0}
+    monkeypatch.setenv("TRADING_ALGORITHM_BOT_FILE", str(tmp_path / "algorithm_bot.yaml"))
+    monkeypatch.setenv("TRADING_OPTIONS_BOT_FILE", str(tmp_path / "options_bot.yaml"))
+
+    monkeypatch.setattr(api_payloads.bot_runtime, "wake_algorithm", lambda: woke.__setitem__("algorithm", woke["algorithm"] + 1))
+    monkeypatch.setattr(api_payloads.bot_runtime, "wake_options", lambda: woke.__setitem__("options", woke["options"] + 1))
+
+    payload = api_payloads.save_controls_payload(
+        {
+            "controls": {
+                "active_strategy": "none",
+                "algorithm_enabled": True,
+                "options_strategy": "none",
+                "options_trading_enabled": True,
+            }
+        }
+    )
+
+    assert payload["controls"]["algorithm_enabled"] is False
+    assert payload["controls"]["options_trading_enabled"] is False
+    assert woke == {"algorithm": 1, "options": 1}
 
 
 def test_none_backtest_returns_flat_payload_without_market_data(monkeypatch) -> None:
@@ -176,7 +223,7 @@ def test_none_backtest_returns_flat_payload_without_market_data(monkeypatch) -> 
     monkeypatch.setattr(
         api_payloads,
         "load_dca_plan",
-        lambda rows: {"enabled": False, "frequency": "weekly", "accumulate": {"items": []}, "sell": {"items": []}},
+        lambda rows: {"enabled": False, "frequency": "weekly", "buy": {"items": []}, "sell": {"items": []}},
     )
     monkeypatch.setattr(api_payloads, "_load_backtest_cache", lambda: {"version": 2, "items": {}})
     monkeypatch.setattr(api_payloads, "_save_backtest_cache", lambda cache: saved_cache.update(cache))
@@ -198,7 +245,7 @@ def test_cache_only_backtest_does_not_compute_without_cached_rows(monkeypatch) -
     monkeypatch.setattr(
         api_payloads,
         "load_dca_plan",
-        lambda rows: {"enabled": False, "frequency": "weekly", "accumulate": {"items": []}, "sell": {"items": []}},
+        lambda rows: {"enabled": False, "frequency": "weekly", "buy": {"items": []}, "sell": {"items": []}},
     )
     monkeypatch.setattr(api_payloads, "_load_backtest_cache", lambda: {"version": 2, "items": {}})
     monkeypatch.setattr(api_payloads, "_compute_backtest", fail_compute)
@@ -219,7 +266,7 @@ def test_non_refresh_backtest_does_not_compute_without_cached_rows(monkeypatch) 
     monkeypatch.setattr(
         api_payloads,
         "load_dca_plan",
-        lambda rows: {"enabled": False, "frequency": "weekly", "accumulate": {"items": []}, "sell": {"items": []}},
+        lambda rows: {"enabled": False, "frequency": "weekly", "buy": {"items": []}, "sell": {"items": []}},
     )
     monkeypatch.setattr(api_payloads, "_load_backtest_cache", lambda: {"version": 4, "items": {}})
     monkeypatch.setattr(api_payloads, "_compute_backtest", fail_compute)
@@ -248,7 +295,7 @@ def test_refresh_backtest_computes_with_market_data_refresh(monkeypatch) -> None
     monkeypatch.setattr(
         api_payloads,
         "load_dca_plan",
-        lambda rows: {"enabled": False, "frequency": "weekly", "accumulate": {"items": []}, "sell": {"items": []}},
+        lambda rows: {"enabled": False, "frequency": "weekly", "buy": {"items": []}, "sell": {"items": []}},
     )
     monkeypatch.setattr(api_payloads, "_load_backtest_cache", lambda: {"version": 4, "items": {}})
     monkeypatch.setattr(api_payloads, "_save_backtest_cache", lambda cache: None)
@@ -266,8 +313,8 @@ def test_dca_backtest_uses_cron_schedule_and_reports_skipped_cash(monkeypatch) -
         "enabled": True,
         "frequency": "weekly",
         "schedule_pattern": "0 12 * * 1-5",
-        "accumulate": {"enabled": True, "items": [{"symbol": "AAA", "amount": 100.0}]},
-        "sell": {"enabled": False, "items": []},
+        "buy": {"items": [{"symbol": "AAA", "amount": 100.0}]},
+        "sell": {"items": []},
     }
 
     monkeypatch.setattr(api_payloads, "create_data_client", lambda config: object())
@@ -363,8 +410,8 @@ def test_none_strategy_signals_summarize_dca_plan(monkeypatch) -> None:
             "enabled": True,
             "schedule_pattern": "0 12 * * 1-5",
             "frequency": "weekly",
-            "accumulate": {"enabled": True, "items": [{"symbol": "SPY", "amount": 25}]},
-            "sell": {"enabled": False, "items": []},
+            "buy": {"items": [{"symbol": "SPY", "amount": 25}]},
+            "sell": {"items": []},
         },
     )
 
@@ -376,23 +423,36 @@ def test_none_strategy_signals_summarize_dca_plan(monkeypatch) -> None:
 
 
 def test_user_dual_momentum_signals_include_inactive_universe_rows(monkeypatch) -> None:
-    monkeypatch.setenv("SYMBOLS", "VTI,XBI,BIL")
     monkeypatch.setattr(api_payloads, "create_data_client", lambda config: object())
 
-    bars = {
-        "VTI": _strategy_bars([100 + index * 0.16 for index in range(320)]),
-        "XBI": _strategy_bars([110 - index * 0.03 for index in range(320)]),
-        "BIL": _strategy_bars([100 + index * 0.01 for index in range(320)]),
-    }
-    monkeypatch.setattr(api_payloads, "fetch_daily_bars", lambda symbols, *_args, **_kwargs: {symbol: bars[symbol] for symbol in symbols})
+    def intraday(symbol: str) -> pd.DataFrame:
+        step = 0.8 if symbol == "VTI" else -0.2 if symbol == "XBI" else 0.05
+        return _strategy_bars([100 + index * step for index in range(20)])
+
+    def daily(symbol: str) -> pd.DataFrame:
+        step = 0.5 if symbol in {"SPY", "VTI"} else -0.2 if symbol == "XBI" else 0.05
+        return _strategy_bars([100 + index * step for index in range(40)])
+
+    monkeypatch.setattr(api_payloads, "get_intraday_bars", lambda symbols, *_args, **_kwargs: {symbol: intraday(symbol) for symbol in symbols})
+    monkeypatch.setattr(api_payloads, "get_user_dual_daily_bars", lambda symbols, *_args, **_kwargs: {symbol: daily(symbol) for symbol in symbols})
+    monkeypatch.setattr(
+        api_payloads,
+        "fetch_latest_news_sentiment",
+        lambda symbols, config: [
+            {"symbol": "SPY", "timestamp": pd.Timestamp.now(tz="UTC").isoformat(), "sentiment": 0.5, "provider": "stocktwits"},
+            {"symbol": "VTI", "timestamp": pd.Timestamp.now(tz="UTC").isoformat(), "sentiment": 0.3, "provider": "stocktwits"},
+        ],
+    )
 
     payload = strategy_signals_payload("user_dual_momentum")
 
     by_symbol = {row["symbol"]: row for row in payload["leaders"]}
-    assert set(by_symbol) == {"VTI", "XBI", "BIL"}
+    assert {"VTI", "XBI", "BIL"} <= set(by_symbol)
     assert by_symbol["VTI"]["side"] == "LONG"
     assert by_symbol["XBI"]["side"] == "FLAT"
-    assert by_symbol["BIL"]["side"] == "FLAT"
+    assert by_symbol["VTI"]["sentiment_providers"] == ["stocktwits"]
+    assert by_symbol["VTI"]["sentiment_records"] == 1
+    assert payload["summary"][0]["value"] == "RISK ON"
     assert by_symbol["XBI"]["target_weight"] == 0.0
     assert by_symbol["XBI"]["reason"]
 

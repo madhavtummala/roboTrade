@@ -48,7 +48,7 @@ KILL_SWITCH = False
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
 HISTORY_EXTRA_BUFFER_DAYS = 250
 LOG_FILE = "logs/trading.log"
-TRADABLES_CSV = "tradable_etfs.csv"
+TRADABLES_CSV = "data/tradable_etfs.csv"
 ALPACA_DATA_FEED = "iex"
 ALPHA_VANTAGE_NEWS_CSV = "data/social_trends.csv"
 ALPHA_VANTAGE_NEWS_LOOKBACK_DAYS = 30
@@ -56,21 +56,75 @@ ALPHA_VANTAGE_NEWS_LIMIT = 50
 ALPHA_VANTAGE_MAX_SYMBOLS = 20
 ALPHA_VANTAGE_REQUEST_DELAY_SECONDS = 0.0
 CONFIG_FILE = "config/trading_bot.yaml"
+ACCOUNTS_FILE = "config/accounts.yaml"
+CONNECTORS_FILE = "config/connectors.yaml"
+ALGORITHMS_FILE = "config/algorithms.yaml"
+DCA_CONFIG_FILE = "config/dca.yaml"
+ALGORITHM_BOT_FILE = "config/algorithm_bot.yaml"
+OPTIONS_BOT_FILE = "config/options_bot.yaml"
+DCA_BOT_FILE = "config/dca_bot.yaml"
+UNIVERSE_FILE = "config/universe.yaml"
+MARKET_DATA_PROVIDER_ORDER: list[str] = []
+NEWS_SENTIMENT_PROVIDER_ORDER: list[str] = []
+MARKET_DATA_CACHE_TTL_SECONDS = 1800
+NEWS_SENTIMENT_CACHE_TTL_SECONDS = 1800
+ALGORITHM_CHECK_SECONDS = 60
+DCA_CHECK_SECONDS = 300
+ALGORITHM_MARKET_DATA_REFRESH_MINUTES = 30
+OPTIONS_SWING_DTE_MIN = 30
+OPTIONS_SWING_DTE_MAX = 60
+OPTIONS_SWING_MIN_DELTA = 0.35
+OPTIONS_SWING_MAX_DELTA = 0.65
+OPTIONS_SWING_MAX_CONTRACTS = 1
+OPTIONS_SWING_MAX_PREMIUM = 500.0
+OPTIONS_SWING_MIN_OPEN_INTEREST = 100
+OPTIONS_SWING_MAX_SPREAD_PCT = 0.20
+OPTIONS_SWING_STRIKE_RANGE_PCT = 0.15
+ALGORITHM_IDS = {
+    "momentum_social",
+    "trend_following",
+    "mean_reversion",
+    "breakout",
+    "risk_parity",
+    "dual_momentum",
+    "user_dual_momentum",
+}
+ALGORITHM_KNOB_KEYS = {
+    "momentum_lookback_days",
+    "short_momentum_lookback_days",
+    "long_ma_days",
+    "volume_lookback_days",
+    "social_lookback_days",
+    "max_weight_per_symbol",
+    "max_portfolio_exposure",
+    "max_longs",
+    "min_composite_score",
+    "price_momentum_weight",
+    "social_momentum_weight",
+    "volume_momentum_weight",
+    "target_annual_vol",
+    "cash_buffer",
+    "min_trade_dollars",
+    "rebalance_threshold",
+    "transaction_cost_bps",
+    "backtest_starting_equity",
+    "algorithm_equity_cap",
+    "history_extra_buffer_days",
+}
 
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _resolve_path(path: str | None) -> Path:
+def _resolve_path(path: str | None, default: str = CONFIG_FILE) -> Path:
     if not path:
-        return _project_root() / CONFIG_FILE
+        return _project_root() / default
     candidate = Path(path)
     return candidate if candidate.is_absolute() else _project_root() / candidate
 
 
-def _load_yaml_config(path: str | None = None) -> dict[str, Any]:
-    config_path = config_file_path(path)
+def _load_yaml_file(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         return {}
     content = config_path.read_text(encoding="utf-8")
@@ -81,12 +135,82 @@ def _load_yaml_config(path: str | None = None) -> dict[str, Any]:
     return loaded
 
 
+def _load_yaml_config(path: str | None = None) -> dict[str, Any]:
+    return _load_yaml_file(config_file_path(path))
+
+
 def config_file_path(path: str | None = None) -> Path:
     return _resolve_path(path or os.getenv("TRADING_CONFIG_FILE", CONFIG_FILE))
 
 
+def accounts_file_path(path: str | None = None) -> Path:
+    return _resolve_path(path or os.getenv("TRADING_ACCOUNTS_FILE", ACCOUNTS_FILE), ACCOUNTS_FILE)
+
+
+def connectors_file_path(path: str | None = None) -> Path:
+    return _resolve_path(path or os.getenv("TRADING_CONNECTORS_FILE", CONNECTORS_FILE), CONNECTORS_FILE)
+
+
+def _sibling_config_path(path: str | None, env_name: str, default: str) -> Path:
+    if path or os.getenv(env_name):
+        return _resolve_path(path or os.getenv(env_name), default)
+    if os.getenv("TRADING_CONFIG_FILE"):
+        return config_file_path().with_name(Path(default).name)
+    return _resolve_path(default)
+
+
+def algorithms_file_path(path: str | None = None) -> Path:
+    return _sibling_config_path(path, "TRADING_ALGORITHM_BOT_FILE", ALGORITHM_BOT_FILE)
+
+
+def legacy_algorithms_file_path(path: str | None = None) -> Path:
+    return _sibling_config_path(path, "TRADING_ALGORITHMS_FILE", ALGORITHMS_FILE)
+
+
+def options_bot_file_path(path: str | None = None) -> Path:
+    return _sibling_config_path(path, "TRADING_OPTIONS_BOT_FILE", OPTIONS_BOT_FILE)
+
+
+def dca_config_file_path(path: str | None = None) -> Path:
+    return _sibling_config_path(path, "TRADING_DCA_BOT_FILE", DCA_BOT_FILE)
+
+
+def legacy_dca_config_file_path(path: str | None = None) -> Path:
+    return _sibling_config_path(path, "TRADING_DCA_CONFIG_FILE", DCA_CONFIG_FILE)
+
+
+def universe_file_path(path: str | None = None) -> Path:
+    return _sibling_config_path(path, "TRADING_UNIVERSE_FILE", UNIVERSE_FILE)
+
+
 def load_raw_config(path: str | None = None) -> dict[str, Any]:
     return _load_yaml_config(path)
+
+
+def load_accounts_config(path: str | None = None) -> dict[str, Any]:
+    return _load_yaml_file(accounts_file_path(path))
+
+
+def load_connectors_config(path: str | None = None) -> dict[str, Any]:
+    return _load_yaml_file(connectors_file_path(path))
+
+
+def load_algorithms_config(path: str | None = None) -> dict[str, Any]:
+    config = _load_yaml_file(algorithms_file_path(path))
+    return config or _load_yaml_file(legacy_algorithms_file_path(path))
+
+
+def load_options_bot_config(path: str | None = None) -> dict[str, Any]:
+    return _load_yaml_file(options_bot_file_path(path))
+
+
+def load_dca_config(path: str | None = None) -> dict[str, Any]:
+    config = _load_yaml_file(dca_config_file_path(path))
+    return config or _load_yaml_file(legacy_dca_config_file_path(path))
+
+
+def load_universe_config(path: str | None = None) -> dict[str, Any]:
+    return _load_yaml_file(universe_file_path(path))
 
 
 def save_raw_config(config: dict[str, Any], path: str | None = None) -> Path:
@@ -100,14 +224,46 @@ def save_raw_config(config: dict[str, Any], path: str | None = None) -> Path:
     return config_path
 
 
+def _save_yaml_config(config: dict[str, Any], config_path: Path) -> Path:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if yaml is not None:
+        content = yaml.safe_dump(config, sort_keys=False)
+    else:
+        content = _dump_simple_yaml(config)
+    config_path.write_text(content, encoding="utf-8")
+    return config_path
+
+
+def save_dca_config(config: dict[str, Any], path: str | None = None) -> Path:
+    return _save_yaml_config(config, dca_config_file_path(path))
+
+
+def save_algorithm_bot_config(config: dict[str, Any], path: str | None = None) -> Path:
+    return _save_yaml_config(config, algorithms_file_path(path))
+
+
+def save_options_bot_config(config: dict[str, Any], path: str | None = None) -> Path:
+    return _save_yaml_config(config, options_bot_file_path(path))
+
+
+def save_universe_config(config: dict[str, Any], path: str | None = None) -> Path:
+    return _save_yaml_config(config, universe_file_path(path))
+
+
 def save_universe_symbols(symbols: list[str], path: str | None = None) -> Path:
-    raw_config = load_raw_config(path)
+    raw_config = load_universe_config(path)
+    if not raw_config:
+        raw_config = {"tradable_universe": _section(load_raw_config(path), "tradable_universe")}
     universe = raw_config.setdefault("tradable_universe", {})
     if not isinstance(universe, dict):
         universe = {}
         raw_config["tradable_universe"] = universe
+    if "master_list" not in universe and "tradables_csv" not in universe:
+        old_universe = _section(load_raw_config(path), "tradable_universe")
+        if old_universe.get("master_list") or old_universe.get("tradables_csv"):
+            universe["master_list"] = old_universe.get("master_list") or old_universe.get("tradables_csv")
     universe["symbols"] = [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
-    return save_raw_config(raw_config, path)
+    return save_universe_config(raw_config, path)
 
 
 def _parse_scalar(value: str) -> Any:
@@ -149,7 +305,32 @@ def _parse_simple_yaml(content: str) -> dict[str, Any]:
                 entry["parent"][entry["key"]] = container
                 entry["container"] = container
             if isinstance(container, list):
-                container.append(_parse_scalar(stripped[2:]))
+                rest = stripped[2:].strip()
+                if ":" in rest:
+                    key, value = rest.split(":", 1)
+                    item: dict[str, Any] = {}
+                    if value.strip():
+                        item[key.strip()] = _parse_scalar(value)
+                    else:
+                        child: dict[str, Any] = {}
+                        item[key.strip()] = child
+                        stack.append({"indent": indent + 1, "container": child, "parent": item, "key": key.strip()})
+                    container.append(item)
+                    stack.append({"indent": indent, "container": item, "parent": container, "key": None})
+                else:
+                    container.append(_parse_scalar(rest))
+            continue
+        if stripped == "-":
+            entry = stack[-1]
+            container = entry["container"]
+            if isinstance(container, dict) and not container and entry["parent"] is not None:
+                container = []
+                entry["parent"][entry["key"]] = container
+                entry["container"] = container
+            if isinstance(container, list):
+                item = {}
+                container.append(item)
+                stack.append({"indent": indent, "container": item, "parent": container, "key": None})
             continue
         if ":" not in stripped:
             continue
@@ -209,6 +390,72 @@ def _section(config: dict[str, Any], name: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _normalize_keyed_items(value: Any) -> dict[str, dict[str, Any]]:
+    if isinstance(value, dict):
+        return {str(key): item if isinstance(item, dict) else {} for key, item in value.items()}
+    if isinstance(value, list):
+        items: dict[str, dict[str, Any]] = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or item.get("name") or item.get("provider") or "").strip()
+            if not item_id:
+                continue
+            items[item_id] = {key: val for key, val in item.items() if key not in {"id", "name"}}
+        return items
+    return {}
+
+
+def _normalize_accounts_config(raw: dict[str, Any]) -> tuple[str, dict[str, dict[str, Any]]]:
+    if not raw:
+        return "", {}
+    if isinstance(raw.get("accounts"), list):
+        return str(raw.get("default") or ""), _normalize_keyed_items(raw.get("accounts"))
+    accounts = raw.get("accounts") if isinstance(raw.get("accounts"), dict) else raw
+    if not isinstance(accounts, dict):
+        return "", {}
+    items = accounts.get("items", accounts.get("accounts", []))
+    return str(accounts.get("default") or raw.get("default") or ""), _normalize_keyed_items(items)
+
+
+def _normalize_data_sources(raw: dict[str, Any]) -> dict[str, Any]:
+    if not raw:
+        return {}
+    sources = raw.get("data_sources", raw.get("connectors", raw))
+    if not isinstance(sources, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for category in ("market_data", "news_sentiment"):
+        section = sources.get(category, {})
+        if not isinstance(section, dict):
+            normalized[category] = {"provider_order": [], "providers": {}}
+            continue
+        providers = _normalize_keyed_items(section.get("providers", []))
+        provider_order = _as_list(section.get("provider_order"), list(providers)) if "provider_order" in section else list(providers)
+        normalized[category] = {
+            **section,
+            "provider_order": provider_order,
+            "providers": providers,
+        }
+    return normalized
+
+
+def _direct_or_env(section: dict[str, Any], key: str, env_key: str, fallback_env: str = "") -> str:
+    if section.get(key):
+        return _env_ref(section.get(key), "")
+    env_name = str(section.get(env_key) or "").strip()
+    if env_name:
+        return os.getenv(env_name, "")
+    return os.getenv(fallback_env, "") if fallback_env else ""
+
+
+def _provider_secret(data_sources: dict[str, Any], category: str, provider: str, fallback_env: str = "") -> str:
+    section = _section(data_sources, category)
+    providers = _section(section, "providers")
+    provider_config = _section(providers, provider)
+    return _direct_or_env(provider_config, "api_key", "api_key_env", fallback_env)
+
+
 def _env_ref(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -246,6 +493,44 @@ def _as_float(value: Any, default: float) -> float:
     if value is None or value == "":
         return default
     return float(value)
+
+
+def _as_list(value: Any, default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        parsed = [item.strip() for item in value.split(",") if item.strip()]
+        return parsed or list(default)
+    if isinstance(value, list):
+        parsed = [str(item).strip() for item in value if str(item).strip()]
+        return parsed or list(default)
+    return list(default)
+
+
+def _algorithm_sections(raw_config: dict[str, Any], raw_algorithms_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    sections: dict[str, dict[str, Any]] = {}
+    sections.update(_section(raw_config, "algorithms"))
+
+    if raw_algorithms_config:
+        external = _section(raw_algorithms_config, "algorithms") or raw_algorithms_config
+        sections.update(
+            {
+                key: value
+                for key, value in external.items()
+                if isinstance(value, dict) and key not in {"algorithm_bot", "runtime"}
+            }
+        )
+
+    for strategy_id in ALGORITHM_IDS:
+        section = _section(raw_config, strategy_id)
+        if section:
+            sections.setdefault(strategy_id, {}).update(section)
+
+    root_algorithm = {key: raw_config[key] for key in ALGORITHM_KNOB_KEYS if key in raw_config}
+    if root_algorithm:
+        sections.setdefault("momentum_social", {}).update(root_algorithm)
+
+    return sections
 
 
 @dataclass(frozen=True)
@@ -290,43 +575,79 @@ class Config:
     alpha_vantage_request_delay_seconds: float = ALPHA_VANTAGE_REQUEST_DELAY_SECONDS
     account_options: list[dict[str, str]] = field(default_factory=list)
     algorithm_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    market_data_provider_order: list[str] = field(default_factory=lambda: list(MARKET_DATA_PROVIDER_ORDER))
+    news_sentiment_provider_order: list[str] = field(default_factory=lambda: list(NEWS_SENTIMENT_PROVIDER_ORDER))
+    market_data_cache_ttl_seconds: int = MARKET_DATA_CACHE_TTL_SECONDS
+    news_sentiment_cache_ttl_seconds: int = NEWS_SENTIMENT_CACHE_TTL_SECONDS
+    data_source_configs: dict[str, Any] = field(default_factory=dict)
+    algorithm_check_seconds: int = ALGORITHM_CHECK_SECONDS
+    dca_check_seconds: int = DCA_CHECK_SECONDS
+    algorithm_market_data_refresh_minutes: int = ALGORITHM_MARKET_DATA_REFRESH_MINUTES
+    options_swing_dte_min: int = OPTIONS_SWING_DTE_MIN
+    options_swing_dte_max: int = OPTIONS_SWING_DTE_MAX
+    options_swing_min_delta: float = OPTIONS_SWING_MIN_DELTA
+    options_swing_max_delta: float = OPTIONS_SWING_MAX_DELTA
+    options_swing_max_contracts: int = OPTIONS_SWING_MAX_CONTRACTS
+    options_swing_max_premium: float = OPTIONS_SWING_MAX_PREMIUM
+    options_swing_min_open_interest: int = OPTIONS_SWING_MIN_OPEN_INTEREST
+    options_swing_max_spread_pct: float = OPTIONS_SWING_MAX_SPREAD_PCT
+    options_swing_strike_range_pct: float = OPTIONS_SWING_STRIKE_RANGE_PCT
 
 
 def get_config(account_id: str | None = None, strategy_id: str | None = None) -> Config:
     raw_config = _load_yaml_config()
-    accounts = _section(raw_config, "accounts")
-    account_items = _section(accounts, "items")
-    default_account_id = str(accounts.get("default") or os.getenv("TRADING_ACCOUNT_ID") or "default")
+    raw_accounts_config = load_accounts_config()
+    legacy_accounts = {"accounts": raw_config.get("accounts", {})} if raw_config.get("accounts") else {}
+    default_account_id, account_items = _normalize_accounts_config(raw_accounts_config or legacy_accounts)
+    if not default_account_id:
+        default_account_id = os.getenv("TRADING_ACCOUNT_ID") or "default"
     selected_account_id = str(account_id or os.getenv("TRADING_ACCOUNT_ID") or default_account_id)
     account_config = _section(account_items, selected_account_id)
     if not account_config and account_items:
         selected_account_id = default_account_id if default_account_id in account_items else next(iter(account_items))
         account_config = _section(account_items, selected_account_id)
 
-    universe = _section(raw_config, "tradable_universe")
+    raw_universe_config = load_universe_config()
+    universe = _section(raw_universe_config, "tradable_universe") or _section(raw_config, "tradable_universe")
+    raw_algorithm_bot_config = load_algorithms_config()
     legacy_algorithm = _section(raw_config, "algorithm")
-    algorithm_configs = _section(raw_config, "algorithms")
+    algorithm_configs = _algorithm_sections(raw_config, raw_algorithm_bot_config)
     selected_strategy_id = str(strategy_id or "momentum_social")
     algorithm = {**legacy_algorithm, **_section(algorithm_configs, selected_strategy_id)}
-    runtime = _section(raw_config, "runtime")
+    raw_dca_bot_config = load_dca_config()
+    algorithm_bot = _section(raw_algorithm_bot_config, "algorithm_bot")
+    dca_bot = _section(raw_dca_bot_config, "dca_bot")
+    runtime = {
+        **_section(raw_config, "runtime"),
+        **_section(raw_algorithm_bot_config, "runtime"),
+        **{key: value for key, value in algorithm_bot.items() if key in {"algorithm_check_seconds", "algorithm_market_data_refresh_minutes"}},
+        **{key: value for key, value in dca_bot.items() if key in {"dca_check_seconds"}},
+    }
+    raw_options_bot_config = load_options_bot_config()
+    options = _section(raw_options_bot_config, "options") or _section(raw_config, "options")
     social = _section(raw_config, "social")
     alpha_vantage = _section(raw_config, "alpha_vantage")
+    raw_connectors_config = load_connectors_config()
+    legacy_data_sources = {"data_sources": raw_config.get("data_sources", {})} if raw_config.get("data_sources") else {}
+    data_sources = _normalize_data_sources(raw_connectors_config or legacy_data_sources)
+    market_sources = _section(data_sources, "market_data")
+    news_sources = _section(data_sources, "news_sentiment")
 
     kill_switch = _str_to_bool(str(_config_value(runtime, "kill_switch", "KILL_SWITCH", KILL_SWITCH)), KILL_SWITCH)
-    api_key = _env_ref(account_config.get("api_key", account_config.get("api_key_env")), os.getenv("ALPACA_API_KEY", ""))
-    if str(account_config.get("api_key_env", "")).strip():
-        api_key = os.getenv(str(account_config["api_key_env"]).strip(), api_key)
-    api_secret = _env_ref(
-        account_config.get("api_secret", account_config.get("api_secret_env")),
-        os.getenv("ALPACA_API_SECRET", ""),
-    )
-    if str(account_config.get("api_secret_env", "")).strip():
-        api_secret = os.getenv(str(account_config["api_secret_env"]).strip(), api_secret)
+    api_key = _direct_or_env(account_config, "api_key", "api_key_env", "ALPACA_API_KEY")
+    api_secret = _direct_or_env(account_config, "api_secret", "api_secret_env", "ALPACA_API_SECRET")
     base_url = str(
         _config_value(account_config, "base_url", "ALPACA_BASE_URL", ALPACA_BASE_URL)
     ).strip() or ALPACA_BASE_URL
     symbols_env = os.getenv("SYMBOLS")
-    tradables_csv = str(_config_value(universe, "tradables_csv", "TRADABLES_CSV", TRADABLES_CSV))
+    tradables_csv = str(
+        _config_value(
+            universe,
+            "master_list",
+            "TRADABLES_CSV",
+            universe.get("tradables_csv", TRADABLES_CSV),
+        )
+    )
     yaml_symbols = universe.get("symbols")
     if symbols_env is not None:
         symbols = _parse_symbols(symbols_env, SYMBOLS)
@@ -339,16 +660,15 @@ def get_config(account_id: str | None = None, strategy_id: str | None = None) ->
             symbols = [symbol for symbol in symbols if symbol in tradable_names]
     if not symbols:
         raise ValueError("Configured trading universe must include at least one symbol.")
-    alpha_vantage_api_key = _env_ref(
-        alpha_vantage.get("api_key", alpha_vantage.get("api_key_env")),
-        os.getenv("ALPHA_VANTAGE_API_KEY", ""),
+    alpha_vantage_api_key = (
+        _direct_or_env(alpha_vantage, "api_key", "api_key_env", "ALPHA_VANTAGE_API_KEY")
+        or _provider_secret(data_sources, "market_data", "alpha_vantage", "ALPHA_VANTAGE_API_KEY")
+        or _provider_secret(data_sources, "news_sentiment", "alpha_vantage", "ALPHA_VANTAGE_API_KEY")
     )
-    if str(alpha_vantage.get("api_key_env", "")).strip():
-        alpha_vantage_api_key = os.getenv(str(alpha_vantage["api_key_env"]).strip(), alpha_vantage_api_key)
     account_options = [
         {"id": str(key), "label": str(_section(account_items, str(key)).get("label") or key)}
         for key in account_items
-    ] or [{"id": selected_account_id, "label": str(account_config.get("label") or "Default")}]
+    ]
     alpha_vantage_news_csv = str(_config_value(alpha_vantage, "news_csv", "ALPHA_VANTAGE_NEWS_CSV", ALPHA_VANTAGE_NEWS_CSV))
     social_trends_csv = str(social.get("trends_csv") or alpha_vantage_news_csv)
 
@@ -393,4 +713,47 @@ def get_config(account_id: str | None = None, strategy_id: str | None = None) ->
         alpha_vantage_request_delay_seconds=_as_float(_config_value(alpha_vantage, "request_delay_seconds", "ALPHA_VANTAGE_REQUEST_DELAY_SECONDS", ALPHA_VANTAGE_REQUEST_DELAY_SECONDS), ALPHA_VANTAGE_REQUEST_DELAY_SECONDS),
         account_options=account_options,
         algorithm_configs=algorithm_configs,
+        market_data_provider_order=_as_list(
+            _config_value(market_sources, "provider_order", "MARKET_DATA_PROVIDER_ORDER", MARKET_DATA_PROVIDER_ORDER),
+            MARKET_DATA_PROVIDER_ORDER,
+        ),
+        news_sentiment_provider_order=_as_list(
+            _config_value(news_sources, "provider_order", "NEWS_SENTIMENT_PROVIDER_ORDER", NEWS_SENTIMENT_PROVIDER_ORDER),
+            NEWS_SENTIMENT_PROVIDER_ORDER,
+        ),
+        market_data_cache_ttl_seconds=_as_int(
+            _config_value(market_sources, "cache_ttl_seconds", "MARKET_DATA_CACHE_TTL_SECONDS", MARKET_DATA_CACHE_TTL_SECONDS),
+            MARKET_DATA_CACHE_TTL_SECONDS,
+        ),
+        news_sentiment_cache_ttl_seconds=_as_int(
+            _config_value(news_sources, "cache_ttl_seconds", "NEWS_SENTIMENT_CACHE_TTL_SECONDS", NEWS_SENTIMENT_CACHE_TTL_SECONDS),
+            NEWS_SENTIMENT_CACHE_TTL_SECONDS,
+        ),
+        data_source_configs=data_sources,
+        algorithm_check_seconds=_as_int(
+            _config_value(runtime, "algorithm_check_seconds", "ALGORITHM_CHECK_SECONDS", ALGORITHM_CHECK_SECONDS),
+            ALGORITHM_CHECK_SECONDS,
+        ),
+        dca_check_seconds=_as_int(
+            _config_value(runtime, "dca_check_seconds", "DCA_CHECK_SECONDS", DCA_CHECK_SECONDS),
+            DCA_CHECK_SECONDS,
+        ),
+        algorithm_market_data_refresh_minutes=_as_int(
+            _config_value(
+                runtime,
+                "algorithm_market_data_refresh_minutes",
+                "ALGORITHM_MARKET_DATA_REFRESH_MINUTES",
+                ALGORITHM_MARKET_DATA_REFRESH_MINUTES,
+            ),
+            ALGORITHM_MARKET_DATA_REFRESH_MINUTES,
+        ),
+        options_swing_dte_min=_as_int(_config_value(options, "swing_dte_min", "OPTIONS_SWING_DTE_MIN", OPTIONS_SWING_DTE_MIN), OPTIONS_SWING_DTE_MIN),
+        options_swing_dte_max=_as_int(_config_value(options, "swing_dte_max", "OPTIONS_SWING_DTE_MAX", OPTIONS_SWING_DTE_MAX), OPTIONS_SWING_DTE_MAX),
+        options_swing_min_delta=_as_float(_config_value(options, "swing_min_delta", "OPTIONS_SWING_MIN_DELTA", OPTIONS_SWING_MIN_DELTA), OPTIONS_SWING_MIN_DELTA),
+        options_swing_max_delta=_as_float(_config_value(options, "swing_max_delta", "OPTIONS_SWING_MAX_DELTA", OPTIONS_SWING_MAX_DELTA), OPTIONS_SWING_MAX_DELTA),
+        options_swing_max_contracts=_as_int(_config_value(options, "swing_max_contracts", "OPTIONS_SWING_MAX_CONTRACTS", OPTIONS_SWING_MAX_CONTRACTS), OPTIONS_SWING_MAX_CONTRACTS),
+        options_swing_max_premium=_as_float(_config_value(options, "swing_max_premium", "OPTIONS_SWING_MAX_PREMIUM", OPTIONS_SWING_MAX_PREMIUM), OPTIONS_SWING_MAX_PREMIUM),
+        options_swing_min_open_interest=_as_int(_config_value(options, "swing_min_open_interest", "OPTIONS_SWING_MIN_OPEN_INTEREST", OPTIONS_SWING_MIN_OPEN_INTEREST), OPTIONS_SWING_MIN_OPEN_INTEREST),
+        options_swing_max_spread_pct=_as_float(_config_value(options, "swing_max_spread_pct", "OPTIONS_SWING_MAX_SPREAD_PCT", OPTIONS_SWING_MAX_SPREAD_PCT), OPTIONS_SWING_MAX_SPREAD_PCT),
+        options_swing_strike_range_pct=_as_float(_config_value(options, "swing_strike_range_pct", "OPTIONS_SWING_STRIKE_RANGE_PCT", OPTIONS_SWING_STRIKE_RANGE_PCT), OPTIONS_SWING_STRIKE_RANGE_PCT),
     )
