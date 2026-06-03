@@ -101,6 +101,7 @@ def initialize_schema(connection) -> None:
         )
         """
     )
+    connection.execute("UPDATE market_bars SET adjusted_close = close WHERE adjusted_close IS NULL")
 
 
 def _now() -> datetime:

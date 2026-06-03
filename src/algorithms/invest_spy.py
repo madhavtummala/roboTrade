@@ -346,6 +346,7 @@ class InvestSpyAlgorithm(BaseAlgorithm):
         strategy_config = InvestSpyConfig.from_runtime_config(config)
         return AlgorithmRequirements(
             price_symbols=sorted(set(strategy_config.symbols) | set(current_positions)),
+            daily_lookback_days=strategy_config.macro_trend_lookback_days,
             paper_only=True,
         )
 

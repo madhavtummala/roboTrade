@@ -17,8 +17,8 @@ from ..data import fetch_daily_bars
 from ..execution.backtest import calculate_performance_metrics
 from ..core.bot_runtime import bot_runtime
 from ..core.config import get_config, save_universe_symbols
+from ..algorithms.registry import get_algorithm_class
 from ..connectors import (
-    fetch_eod_market_bars,
     fetch_latest_news_sentiment,
     merge_social_frames,
     news_records_to_social_frames,
@@ -28,6 +28,7 @@ from ..algorithms.dca import allocation_preview, load_dca_plan, save_dca_plan
 from ..core.portfolio import compute_target_weights
 from ..data.signals.signals import compute_signals_for_universe
 from ..data.social import load_social_trends_csv
+from ..data.duckdb_store import read_market_bars
 from ..data.state_store import load_state, save_state
 from ..core.strategy_models import (
     STRATEGY_LABELS,
@@ -1208,6 +1209,106 @@ def _dca_backtest(
     return pd.DataFrame(records).set_index("timestamp").sort_index()
 
 
+def _strategy_history_bars(strategy: str, period: str, config) -> dict[str, pd.DataFrame]:
+    algorithm = get_algorithm_class(strategy).from_config(config)
+    requirements = algorithm.requirements(config, {})
+    symbols = requirements.price_symbols or config.symbols
+    return fetch_daily_bars(
+        symbols,
+        config=config,
+        lookback_days=int(requirements.daily_lookback_days or config.momentum_lookback_days),
+        ma_days=int(requirements.daily_ma_days or 0),
+        extra_buffer_days=int(requirements.daily_extra_buffer_days or 0) + _period_row_count(period) + 10,
+        alpaca_data_client=create_data_client(config),
+        data_feed=config.alpaca_data_feed,
+        include_latest=True,
+    )
+
+
+def _history_price_at(
+    df: pd.DataFrame,
+    timestamp: pd.Timestamp,
+    column: str,
+    *,
+    fallback_column: str | None = None,
+) -> float:
+    value = df.loc[timestamp, column] if column in df.columns else pd.NA
+    if isinstance(value, pd.Series):
+        value = value.dropna().iloc[-1] if not value.dropna().empty else pd.NA
+    if pd.isna(value) and fallback_column:
+        value = df.loc[timestamp, fallback_column] if fallback_column in df.columns else pd.NA
+        if isinstance(value, pd.Series):
+            value = value.dropna().iloc[-1] if not value.dropna().empty else pd.NA
+    return float(value) if not pd.isna(value) else 0.0
+
+
+def _configured_intraday_providers(config) -> list[str]:
+    providers = [
+        str(provider).strip().lower()
+        for provider in getattr(config, "intraday_market_data_provider_order", [])
+        if str(provider).strip()
+    ]
+    return providers or ["yfinance"]
+
+
+def _read_backtest_intraday_bars(
+    symbol: str,
+    signal_date: pd.Timestamp,
+    *,
+    config,
+    lookback_bars: int,
+    bar_minutes: int,
+) -> pd.DataFrame:
+    timeframe = f"{int(bar_minutes)}m"
+    providers = _configured_intraday_providers(config)
+    intraday_end = signal_date + pd.Timedelta(hours=20)
+    for provider in providers:
+        try:
+            bars = read_market_bars(
+                "intraday_market_data",
+                provider,
+                symbol,
+                timeframe,
+                lookback_bars=lookback_bars,
+                end=intraday_end,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Fast Momentum backtest intraday cache read failed provider=%s symbol=%s signal_date=%s timeframe=%s lookback=%s: %s",
+                provider,
+                symbol,
+                signal_date.isoformat(),
+                timeframe,
+                lookback_bars,
+                exc,
+            )
+            continue
+        if not bars.empty:
+            logger.debug(
+                "Fast Momentum backtest intraday cache hit provider=%s symbol=%s signal_date=%s rows=%s",
+                provider,
+                symbol,
+                signal_date.isoformat(),
+                len(bars),
+            )
+            return bars
+        logger.debug(
+            "Fast Momentum backtest intraday cache miss provider=%s symbol=%s signal_date=%s timeframe=%s lookback=%s",
+            provider,
+            symbol,
+            signal_date.isoformat(),
+            timeframe,
+            lookback_bars,
+        )
+    logger.warning(
+        "Fast Momentum backtest intraday cache miss symbol=%s signal_date=%s providers=%s; nano/micro returns will be 0",
+        symbol,
+        signal_date.isoformat(),
+        ",".join(providers),
+    )
+    return pd.DataFrame()
+
+
 def _strategy_backtest(
     strategy: str,
     period: str,
@@ -1217,24 +1318,7 @@ def _strategy_backtest(
     config = get_config(strategy_id=strategy)
     invest_spy_config = InvestSpyConfig.from_runtime_config(config) if strategy == "invest_spy" else None
     defensive_strategy_config = DefensiveMomentumConfig.from_runtime_config(config) if strategy == "fast_momentum" else None
-    if invest_spy_config:
-        backtest_symbols = invest_spy_config.symbols
-    elif defensive_strategy_config:
-        backtest_symbols = defensive_strategy_config.symbols
-    else:
-        backtest_symbols = config.symbols
-    lookback_bars = _period_row_count(period) + 10
-    if defensive_strategy_config:
-        lookback_bars += defensive_strategy_config.required_daily_bars
-    data_client = create_data_client(config)
-    # Strictly use Alpaca for EOD history
-    bars_by_symbol = fetch_eod_market_bars(
-        backtest_symbols,
-        config,
-        lookback_bars=lookback_bars,
-        provider="alpaca",
-        force_refresh=False,
-    )
+    bars_by_symbol = _strategy_history_bars(strategy, period, config)
     history_by_symbol: dict[str, pd.DataFrame] = {}
     for symbol, df in bars_by_symbol.items():
         work = prepared_strategy_frame(df)
@@ -1325,24 +1409,16 @@ def _strategy_backtest(
 
         if strategy == "fast_momentum" and defensive_strategy_config:
             snapshots = {symbol: df.loc[:signal_date].reset_index() for symbol, df in history_by_symbol.items()}
-            # Fetch historical intraday bars relative to the signal date (provider-agnostic)
-            # We shift the end time to include the trading session of the signal_date
-            intraday_end = signal_date + pd.Timedelta(hours=20)
-            intraday_by_symbol = {}
-            for symbol in snapshots:
-                # Strictly use yfinance for historical intraday signals
-                try:
-                    df_intraday = read_market_bars(
-                        "intraday_market_data",
-                        "yfinance",
-                        symbol,
-                        "15m",
-                        lookback_bars=79,
-                        end=intraday_end,
-                    )
-                except Exception:
-                    df_intraday = pd.DataFrame()
-                intraday_by_symbol[symbol] = df_intraday
+            intraday_by_symbol = {
+                symbol: _read_backtest_intraday_bars(
+                    symbol,
+                    signal_date,
+                    config=config,
+                    lookback_bars=defensive_strategy_config.required_intraday_bars,
+                    bar_minutes=15,
+                )
+                for symbol in snapshots
+            }
 
             features = {
                 symbol: compute_price_features(symbol, intraday_by_symbol.get(symbol, pd.DataFrame()), snapshots.get(symbol, pd.DataFrame()), defensive_strategy_config)
@@ -1361,7 +1437,7 @@ def _strategy_backtest(
             max_portfolio_exposure=max_exposure,
         )
 
-    if len(signal_indexes) > 1:
+    if len(signal_indexes) > 1 and strategy != "fast_momentum":
         max_workers = min(8, len(signal_indexes))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             weights_by_index = dict(executor.map(weights_for_index, signal_indexes))
@@ -1380,10 +1456,10 @@ def _strategy_backtest(
             scale = max_exposure / total_weight
             weights = {symbol: weight * scale for symbol, weight in weights.items()}
 
-        open_prices = {symbol: float(df.loc[trade_date, "open"]) for symbol, df in history_by_symbol.items()}
+        open_prices = {symbol: _history_price_at(df, trade_date, "open", fallback_column="close") for symbol, df in history_by_symbol.items()}
         # Use adjusted_close for valuation if available to capture dividends
         close_prices = {
-            symbol: float(df.loc[trade_date, "adjusted_close"] if "adjusted_close" in df.columns else df.loc[trade_date, "close"])
+            symbol: _history_price_at(df, trade_date, "adjusted_close", fallback_column="close")
             for symbol, df in history_by_symbol.items()
         }
         equity_at_open = cash + sum(positions.get(symbol, 0.0) * open_prices[symbol] for symbol in history_by_symbol)

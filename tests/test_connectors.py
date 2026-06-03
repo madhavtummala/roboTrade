@@ -76,6 +76,24 @@ def test_append_latest_quotes_to_bars_adds_intraday_row() -> None:
     assert merged["SPY"]["timestamp"].iloc[-1].isoformat() == "2026-05-21T15:00:00+00:00"
 
 
+def test_normalize_intraday_frame_preserves_adjusted_close() -> None:
+    raw = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-05-20", "2026-05-21"]),
+            "Open": [100.0, 101.0],
+            "High": [101.0, 102.0],
+            "Low": [99.0, 100.0],
+            "Close": [100.5, 101.5],
+            "Adj Close": [99.75, None],
+            "Volume": [1000, 2000],
+        }
+    )
+
+    bars = connectors._normalize_intraday_frame(raw)
+
+    assert bars["adjusted_close"].tolist() == [99.75, 101.5]
+
+
 def test_fetch_finnhub_intraday_bars_parses_and_caches_candles(monkeypatch) -> None:
     saved = {}
     config = Config(

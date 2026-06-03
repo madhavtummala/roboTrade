@@ -213,7 +213,7 @@ def _read_duckdb_bars(
     try:
         from ..data.duckdb_store import read_market_bars
 
-        return read_market_bars(
+        bars = read_market_bars(
             category,
             provider,
             symbol,
@@ -222,8 +222,30 @@ def _read_duckdb_bars(
             start=start,
             end=end,
         )
-    except RuntimeError as exc:
-        logger.debug("DuckDB market cache unavailable: %s", exc)
+        if bars.empty:
+            logger.debug(
+                "DuckDB market cache miss category=%s provider=%s symbol=%s timeframe=%s lookback=%s start=%s end=%s",
+                category,
+                provider,
+                symbol,
+                timeframe,
+                lookback_bars,
+                start,
+                end,
+            )
+        return bars
+    except Exception as exc:
+        logger.warning(
+            "DuckDB market cache read failed category=%s provider=%s symbol=%s timeframe=%s lookback=%s start=%s end=%s: %s",
+            category,
+            provider,
+            symbol,
+            timeframe,
+            lookback_bars,
+            start,
+            end,
+            exc,
+        )
     return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
 
 
@@ -242,8 +264,16 @@ def _write_duckdb_bars(
         from ..data.duckdb_store import write_market_bars
 
         write_market_bars(category, provider, symbol, timeframe, bars, ttl_seconds=ttl_seconds)
-    except RuntimeError as exc:
-        logger.debug("DuckDB market cache unavailable: %s", exc)
+    except Exception as exc:
+        logger.warning(
+            "DuckDB market cache write failed category=%s provider=%s symbol=%s timeframe=%s rows=%s: %s",
+            category,
+            provider,
+            symbol,
+            timeframe,
+            len(bars),
+            exc,
+        )
 
 
 def _read_duckdb_sentiment(provider: str, symbols: list[str]) -> list[dict[str, Any]]:
@@ -365,7 +395,7 @@ def _schwab_candles_to_bars(payload: Any) -> pd.DataFrame:
 
 def _normalize_intraday_frame(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "adjusted_close"])
     work = df.copy()
     if isinstance(work.columns, pd.MultiIndex):
         work.columns = [str(column[0]).lower() for column in work.columns]
@@ -377,20 +407,24 @@ def _normalize_intraday_frame(df: pd.DataFrame) -> pd.DataFrame:
         "High": "high",
         "Low": "low",
         "Close": "close",
+        "Adj Close": "adjusted_close",
         "Volume": "volume",
     }
     work = work.rename(columns={key: value for key, value in rename.items() if key in work.columns})
     work = work.rename(columns={column: str(column).lower() for column in work.columns})
+    if "adj close" in work.columns and "adjusted_close" not in work.columns:
+        work = work.rename(columns={"adj close": "adjusted_close"})
     if "timestamp" not in work:
-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "adjusted_close"])
     work["timestamp"] = pd.to_datetime(work["timestamp"], utc=True, errors="coerce")
-    for column in ("open", "high", "low", "close", "volume"):
+    for column in ("open", "high", "low", "close", "volume", "adjusted_close"):
         if column not in work:
-            work[column] = 0.0
+            work[column] = work["close"] if column == "adjusted_close" and "close" in work else 0.0
         work[column] = pd.to_numeric(work[column], errors="coerce")
+    work["adjusted_close"] = work["adjusted_close"].fillna(work["close"])
     return (
         work.dropna(subset=["timestamp", "open", "high", "low", "close"])
-        [["timestamp", "open", "high", "low", "close", "volume"]]
+        [["timestamp", "open", "high", "low", "close", "volume", "adjusted_close"]]
         .sort_values("timestamp")
         .drop_duplicates(subset=["timestamp"], keep="last")
         .reset_index(drop=True)
@@ -873,6 +907,7 @@ def _bars_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "low": float(row["low"]),
                 "close": float(row["close"]),
                 "volume": float(row["volume"]),
+                "adjusted_close": float(row.get("adjusted_close", row["close"])),
             }
         )
     return records

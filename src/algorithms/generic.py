@@ -45,9 +45,12 @@ class TemplateStrategyAlgorithm(BaseAlgorithm):
     algorithm_id = "momentum_social"
 
     def requirements(self, config: Any, current_positions: dict[str, int]) -> AlgorithmRequirements:
+        daily_lookback_days = config.momentum_lookback_days
+        if self.algorithm_id == "dual_momentum":
+            daily_lookback_days = max(daily_lookback_days, 252)
         return AlgorithmRequirements(
             price_symbols=sorted(set(config.symbols) | set(current_positions)),
-            daily_lookback_days=config.momentum_lookback_days,
+            daily_lookback_days=daily_lookback_days,
             daily_ma_days=config.long_ma_days,
             daily_extra_buffer_days=config.history_extra_buffer_days,
             include_latest_daily=True,
