@@ -6,8 +6,11 @@ services:
     environment:
       KILL_SWITCH: ${KILL_SWITCH:-true}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+      MCP_PORT: ${TRADING_BOT_MCP_CONTAINER_PORT:-8001}
+    command: ["${TRADING_BOT_MODE:---bot}"]
     ports:
       - "${TRADING_BOT_PORT:-8000}:8000"
+      - "${TRADING_BOT_MCP_PORT:-8001}:8001"
     volumes:
       - ${TRADING_BOT_RUNTIME:-./runtime}/config:/config
       - ${TRADING_BOT_RUNTIME:-./runtime}/data:/data

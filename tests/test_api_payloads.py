@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src import api_payloads
-from src.config import Config
-from src.api_payloads import (
+from src.api import api_payloads as api_payloads
+from src.core.config import Config
+from src.api.api_payloads import (
     backtest_payload,
     controls_payload,
     dca_payload,
@@ -238,7 +238,7 @@ def test_none_backtest_returns_flat_payload_without_market_data(monkeypatch) -> 
 
     assert payload["strategy"] == "none"
     assert payload["source"] == "flat"
-    assert payload["period_label"] == "6M"
+    assert payload["period_label"] == "4M"
     assert len(payload["rows"]) > 1
     assert saved_cache["items"]
 
@@ -386,7 +386,7 @@ def test_strategy_backtest_is_cash_account_constrained(monkeypatch) -> None:
     bars = {"AAA": _strategy_bars([100 + index * 0.1 for index in range(280)])}
 
     monkeypatch.setattr(api_payloads, "create_data_client", lambda config: object())
-    monkeypatch.setattr(api_payloads, "fetch_daily_bars", lambda *args, **kwargs: bars)
+    monkeypatch.setattr(api_payloads, "fetch_eod_market_bars", lambda *args, **kwargs: bars)
     monkeypatch.setattr(
         api_payloads,
         "strategy_signal_rows_from_prepared",
@@ -402,15 +402,17 @@ def test_strategy_backtest_is_cash_account_constrained(monkeypatch) -> None:
 
 def test_fast_momentum_backtest_honors_configured_max_positions(monkeypatch) -> None:
     symbols = ["AAA", "BBB", "CCC", "DDD", "EEE"]
-    bars = {symbol: _strategy_bars([100 + index * 0.2 for index in range(280)]) for symbol in symbols}
+    configured_symbols = sorted([*symbols, "FFF"])
+    bars = {symbol: _strategy_bars([100 + index * 0.2 for index in range(280)]) for symbol in configured_symbols}
+    captured_fetch = {}
     config = Config(
-        symbols=symbols,
+        symbols=["IGNORED"],
         cash_buffer=0.0,
         transaction_cost_bps=0.0,
         algorithm_configs={
             "fast_momentum": {
                 "risk_on_universe": symbols,
-                "defensive_universe": [],
+                "defensive_universe": ["FFF"],
                 "max_positions": 4,
                 "max_single_position_weight": 0.25,
                 "max_gross_exposure": 1.0,
@@ -420,7 +422,12 @@ def test_fast_momentum_backtest_honors_configured_max_positions(monkeypatch) -> 
 
     monkeypatch.setattr(api_payloads, "get_config", lambda *args, **kwargs: config)
     monkeypatch.setattr(api_payloads, "create_data_client", lambda config: object())
-    monkeypatch.setattr(api_payloads, "fetch_daily_bars", lambda *args, **kwargs: bars)
+
+    def fake_fetch_eod_market_bars(requested_symbols, _config, **kwargs):
+        captured_fetch.update({"symbols": requested_symbols, **kwargs})
+        return {symbol: bars[symbol] for symbol in requested_symbols}
+
+    monkeypatch.setattr(api_payloads, "fetch_eod_market_bars", fake_fetch_eod_market_bars)
     monkeypatch.setattr(
         api_payloads,
         "strategy_signal_rows_from_prepared",
@@ -430,11 +437,13 @@ def test_fast_momentum_backtest_honors_configured_max_positions(monkeypatch) -> 
         ],
     )
 
-    history = api_payloads._strategy_backtest("fast_momentum", "6m")
+    history = api_payloads._strategy_backtest("fast_momentum", "1m")
 
     position_counts = history["positions"].apply(len)
     assert position_counts.max() == 4
     assert all("EEE" not in positions for positions in history["positions"])
+    assert captured_fetch["symbols"] == configured_symbols
+    assert captured_fetch["lookback_bars"] >= 180 + 22 + 10
 
 
 def test_invest_spy_backtest_uses_invest_spy_state_logic(monkeypatch) -> None:
@@ -461,7 +470,11 @@ def test_invest_spy_backtest_uses_invest_spy_state_logic(monkeypatch) -> None:
 
     monkeypatch.setattr(api_payloads, "get_config", lambda *args, **kwargs: config)
     monkeypatch.setattr(api_payloads, "create_data_client", lambda config: object())
-    monkeypatch.setattr(api_payloads, "fetch_daily_bars", lambda symbols, *args, **kwargs: {symbol: bars[symbol] for symbol in symbols})
+    monkeypatch.setattr(
+        api_payloads,
+        "fetch_eod_market_bars",
+        lambda symbols, *args, **kwargs: {symbol: bars[symbol] for symbol in symbols},
+    )
 
     history = api_payloads._strategy_backtest("invest_spy", "6m")
 
@@ -480,7 +493,7 @@ def test_trend_and_mean_reversion_backtests_can_diverge(monkeypatch) -> None:
     bars = {"AAA": _strategy_bars([100 + index * 0.4 for index in range(280)])}
 
     monkeypatch.setattr(api_payloads, "create_data_client", lambda config: object())
-    monkeypatch.setattr(api_payloads, "fetch_daily_bars", lambda *args, **kwargs: bars)
+    monkeypatch.setattr(api_payloads, "fetch_eod_market_bars", lambda *args, **kwargs: bars)
 
     trend = api_payloads._strategy_backtest("trend_following", "6m")
     mean = api_payloads._strategy_backtest("mean_reversion", "6m")

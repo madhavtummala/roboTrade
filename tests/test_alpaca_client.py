@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from src.alpaca_client import (
+from src.brokerages.alpaca_client import (
     create_trading_client,
     get_historical_daily_bars,
     get_historical_intraday_bars,
@@ -10,7 +10,7 @@ from src.alpaca_client import (
     is_market_open,
     submit_option_limit_order,
 )
-from src.config import Config
+from src.core.config import Config
 
 
 class FakeDataClient:
@@ -64,6 +64,20 @@ def test_get_historical_intraday_bars_builds_30_minute_request() -> None:
     assert client.requests[0].feed.value == "iex"
 
 
+def test_get_historical_intraday_bars_uses_trading_session_window() -> None:
+    client = FakeDataClient()
+    end = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
+
+    get_historical_intraday_bars(
+        ["SPY"],
+        lookback_bars=27,
+        data_client=client,
+        end_date=end,
+    )
+
+    assert end.replace(tzinfo=None) - client.requests[0].start >= timedelta(days=7)
+
+
 def test_create_trading_client_uses_configured_endpoint_without_paper_mode(monkeypatch) -> None:
     captured = {}
 
@@ -71,7 +85,7 @@ def test_create_trading_client_uses_configured_endpoint_without_paper_mode(monke
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setattr("src.alpaca_client.TradingClient", FakeTradingClient)
+    monkeypatch.setattr("src.brokerages.alpaca_client.TradingClient", FakeTradingClient)
 
     create_trading_client(
         Config(
