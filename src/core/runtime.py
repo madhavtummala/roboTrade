@@ -9,7 +9,7 @@ from ..algorithms.registry import get_algorithm_class
 
 logger = logging.getLogger(__name__)
 
-class TradingBot:
+class Walbot:
     def __init__(self, config_path: str = "config/connectors.yaml"):
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
@@ -58,5 +58,5 @@ class TradingBot:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    bot = TradingBot()
+    bot = Walbot()
     bot.run_once()

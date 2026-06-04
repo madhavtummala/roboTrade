@@ -14,6 +14,9 @@ from typing import Any
 import pandas as pd
 
 from ..core.config import Config
+from .utils import filter_bar_range, normalize_intraday_frame
+_filter_bar_range = filter_bar_range
+_normalize_intraday_frame = normalize_intraday_frame
 from ..data.provider_cache import (
     load_cached_payload,
     provider_is_limited,
@@ -128,7 +131,7 @@ def _request_json(
 ) -> Any:
     query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value not in {None, ""}})
     full_url = f"{url}?{query}" if query else url
-    request_headers = {"User-Agent": "trading-bot/1.0", **(headers or {})}
+    request_headers = {"User-Agent": "walbot/1.0", **(headers or {})}
     request = urllib.request.Request(full_url, headers=request_headers)
     try:
         with urllib.request.urlopen(request, timeout=12) as response:
@@ -393,44 +396,6 @@ def _schwab_candles_to_bars(payload: Any) -> pd.DataFrame:
     return pd.DataFrame.from_records(rows).sort_values("timestamp").reset_index(drop=True)
 
 
-def _normalize_intraday_frame(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "adjusted_close"])
-    work = df.copy()
-    if isinstance(work.columns, pd.MultiIndex):
-        work.columns = [str(column[0]).lower() for column in work.columns]
-    work = work.reset_index()
-    rename = {
-        "Datetime": "timestamp",
-        "Date": "timestamp",
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
-        "Adj Close": "adjusted_close",
-        "Volume": "volume",
-    }
-    work = work.rename(columns={key: value for key, value in rename.items() if key in work.columns})
-    work = work.rename(columns={column: str(column).lower() for column in work.columns})
-    if "adj close" in work.columns and "adjusted_close" not in work.columns:
-        work = work.rename(columns={"adj close": "adjusted_close"})
-    if "timestamp" not in work:
-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "adjusted_close"])
-    work["timestamp"] = pd.to_datetime(work["timestamp"], utc=True, errors="coerce")
-    for column in ("open", "high", "low", "close", "volume", "adjusted_close"):
-        if column not in work:
-            work[column] = work["close"] if column == "adjusted_close" and "close" in work else 0.0
-        work[column] = pd.to_numeric(work[column], errors="coerce")
-    work["adjusted_close"] = work["adjusted_close"].fillna(work["close"])
-    return (
-        work.dropna(subset=["timestamp", "open", "high", "low", "close"])
-        [["timestamp", "open", "high", "low", "close", "volume", "adjusted_close"]]
-        .sort_values("timestamp")
-        .drop_duplicates(subset=["timestamp"], keep="last")
-        .reset_index(drop=True)
-    )
-
-
 def _yfinance_period_for(lookback_bars: int, bar_minutes: int) -> str:
     trading_minutes_per_day = 390
     needed_sessions = max(1, math.ceil((bar_minutes * lookback_bars) / trading_minutes_per_day))
@@ -445,6 +410,8 @@ def fetch_yfinance_intraday_bars(
     lookback_bars: int,
     bar_minutes: int = 15,
     force_refresh: bool = False,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch recent intraday OHLCV bars from yfinance with a short-lived cache."""
     if lookback_bars <= 0:
@@ -480,15 +447,22 @@ def fetch_yfinance_intraday_bars(
                 bars_by_symbol[symbol] = duckdb_bars.tail(lookback_bars).reset_index(drop=True)
                 continue
         try:
-            raw = yf.download(
-                symbol,
-                period=period,
-                interval=interval,
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-            )
-            bars = _normalize_intraday_frame(raw).tail(lookback_bars).reset_index(drop=True)
+            kwargs = {
+                "interval": interval,
+                "auto_adjust": False,
+                "progress": False,
+                "threads": False,
+            }
+            if start_date is not None or end_date is not None:
+                kwargs.update({"start": start_date, "end": end_date})
+            else:
+                kwargs["period"] = period
+            raw = yf.download(symbol, **kwargs)
+            bars = filter_bar_range(
+                normalize_intraday_frame(raw),
+                start_date,
+                end_date,
+            ).tail(lookback_bars).reset_index(drop=True)
         except Exception as exc:
             logger.warning("Skipping yfinance intraday bars for %s after provider error: %s", symbol, exc)
             bars = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -514,7 +488,14 @@ def fetch_intraday_market_bars(
     force_refresh: bool = False,
     provider: str | None = None,
     data_client=None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
+    range_kwargs = {
+        key: value
+        for key, value in {"start_date": start_date, "end_date": end_date}.items()
+        if value is not None
+    }
     providers = [provider.lower()] if provider else [
         item.lower()
         for item in getattr(config, "intraday_market_data_provider_order", [])
@@ -526,6 +507,7 @@ def fetch_intraday_market_bars(
             lookback_bars=lookback_bars,
             bar_minutes=bar_minutes,
             force_refresh=force_refresh,
+            **range_kwargs,
         ),
         "finnhub": lambda: fetch_finnhub_intraday_bars(
             symbols,
@@ -533,6 +515,7 @@ def fetch_intraday_market_bars(
             lookback_bars=lookback_bars,
             bar_minutes=bar_minutes,
             force_refresh=force_refresh,
+            **range_kwargs,
         ),
         "alpaca": lambda: fetch_alpaca_intraday_bars(
             symbols,
@@ -541,6 +524,7 @@ def fetch_intraday_market_bars(
             bar_minutes=bar_minutes,
             force_refresh=force_refresh,
             data_client=data_client,
+            **range_kwargs,
         ),
         "schwab": lambda: fetch_schwab_intraday_bars(
             symbols,
@@ -548,6 +532,7 @@ def fetch_intraday_market_bars(
             lookback_bars=lookback_bars,
             bar_minutes=bar_minutes,
             force_refresh=force_refresh,
+            **range_kwargs,
         ),
     }
     empty = {symbol.upper(): pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"]) for symbol in symbols}
@@ -586,6 +571,8 @@ def fetch_alpaca_intraday_bars(
     bar_minutes: int = 30,
     force_refresh: bool = False,
     data_client=None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
     from src.brokerages.alpaca_client import create_data_client, get_historical_intraday_bars
 
@@ -610,10 +597,16 @@ def fetch_alpaca_intraday_bars(
             lookback_bars=lookback_bars,
             bar_minutes=bar_minutes,
             data_client=client,
+            start_date=start_date,
+            end_date=end_date,
             data_feed=config.alpaca_data_feed,
         )
         for symbol, bars in fresh.items():
-            normalized = _normalize_intraday_frame(bars).tail(lookback_bars).reset_index(drop=True)
+            normalized = filter_bar_range(
+                normalize_intraday_frame(bars),
+                start_date,
+                end_date,
+            ).tail(lookback_bars).reset_index(drop=True)
             _write_duckdb_bars(INTRADAY_MARKET_CATEGORY, "alpaca", symbol, timeframe, normalized, ttl_seconds=ttl_seconds)
             bars_by_symbol[symbol.upper()] = normalized
     return bars_by_symbol
@@ -625,6 +618,7 @@ def fetch_schwab_intraday_bars(
     *,
     lookback_bars: int,
     bar_minutes: int = 15,
+    start_date: datetime | None = None,
     end_date: datetime | None = None,
     force_refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
@@ -639,7 +633,7 @@ def fetch_schwab_intraday_bars(
     end = end_date or datetime.now(timezone.utc)
     trading_minutes_per_day = 390
     needed_sessions = max(1, math.ceil((bar_minutes * lookback_bars) / trading_minutes_per_day))
-    start = end - timedelta(days=max(7, (needed_sessions * 3) + 2))
+    start = start_date or end - timedelta(days=max(7, (needed_sessions * 3) + 2))
     timeframe = _timeframe_from_minutes(bar_minutes)
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     for symbol in [item.upper() for item in symbols]:
@@ -666,7 +660,11 @@ def fetch_schwab_intraday_bars(
             },
             headers=_bearer_auth_header(token),
         )
-        bars = _schwab_candles_to_bars(payload).tail(lookback_bars).reset_index(drop=True)
+        bars = filter_bar_range(
+            _schwab_candles_to_bars(payload),
+            start_date,
+            end_date,
+        ).tail(lookback_bars).reset_index(drop=True)
         _write_duckdb_bars(INTRADAY_MARKET_CATEGORY, "schwab", symbol, timeframe, bars, ttl_seconds=ttl_seconds)
         bars_by_symbol[symbol] = bars
     return bars_by_symbol
@@ -678,6 +676,8 @@ def fetch_yfinance_eod_bars(
     *,
     lookback_bars: int,
     force_refresh: bool = False,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
     try:
         import yfinance as yf
@@ -697,8 +697,17 @@ def fetch_yfinance_eod_bars(
             bars_by_symbol[symbol] = cached.tail(lookback_bars).reset_index(drop=True)
             continue
         try:
-            raw = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
-            bars = _normalize_intraday_frame(raw).tail(lookback_bars).reset_index(drop=True)
+            kwargs = {"interval": "1d", "auto_adjust": False, "progress": False, "threads": False}
+            if start_date is not None or end_date is not None:
+                kwargs.update({"start": start_date, "end": end_date})
+            else:
+                kwargs["period"] = period
+            raw = yf.download(symbol, **kwargs)
+            bars = filter_bar_range(
+                normalize_intraday_frame(raw),
+                start_date,
+                end_date,
+            ).tail(lookback_bars).reset_index(drop=True)
         except Exception as exc:
             logger.warning("Skipping yfinance EOD bars for %s after provider error: %s", symbol, exc)
             bars = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -714,6 +723,8 @@ def fetch_alpaca_eod_bars(
     lookback_bars: int,
     force_refresh: bool = False,
     data_client=None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
     from src.brokerages.alpaca_client import create_data_client, get_historical_daily_bars
 
@@ -737,10 +748,16 @@ def fetch_alpaca_eod_bars(
             lookback_days=lookback_bars,
             extra_buffer_days=0,
             data_client=client,
+            start_date=start_date,
+            end_date=end_date,
             data_feed=config.alpaca_data_feed,
         )
         for symbol, bars in fresh.items():
-            normalized = _normalize_intraday_frame(bars).tail(lookback_bars).reset_index(drop=True)
+            normalized = filter_bar_range(
+                normalize_intraday_frame(bars),
+                start_date,
+                end_date,
+            ).tail(lookback_bars).reset_index(drop=True)
             _write_duckdb_bars(EOD_MARKET_CATEGORY, "alpaca", symbol, "1d", normalized, ttl_seconds=ttl_seconds)
             bars_by_symbol[symbol.upper()] = normalized
     return bars_by_symbol
@@ -751,6 +768,7 @@ def fetch_finnhub_eod_bars(
     config: Config,
     *,
     lookback_bars: int,
+    start_date: datetime | None = None,
     end_date: datetime | None = None,
     force_refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
@@ -759,7 +777,7 @@ def fetch_finnhub_eod_bars(
         raise ProviderUnavailable("FINNHUB_API_KEY is not configured")
     ttl_seconds = int(getattr(config, "eod_market_data_cache_ttl_seconds", EOD_CACHE_TTL_SECONDS))
     end = end_date or datetime.now(timezone.utc)
-    start = end - timedelta(days=max(int(lookback_bars * 2), 30))
+    start = start_date or end - timedelta(days=max(int(lookback_bars * 2), 30))
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     for symbol in [item.upper() for item in symbols]:
         cached = (
@@ -783,7 +801,11 @@ def fetch_finnhub_eod_bars(
                     "token": key,
                 },
             )
-            bars = _finnhub_candles_to_bars(payload).tail(lookback_bars).reset_index(drop=True)
+            bars = filter_bar_range(
+                _finnhub_candles_to_bars(payload),
+                start_date,
+                end_date,
+            ).tail(lookback_bars).reset_index(drop=True)
         except ProviderUnavailable as exc:
             logger.warning("Skipping Finnhub EOD bars for %s after provider error: %s", symbol, exc)
             bars = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -797,6 +819,7 @@ def fetch_schwab_eod_bars(
     config: Config,
     *,
     lookback_bars: int,
+    start_date: datetime | None = None,
     end_date: datetime | None = None,
     force_refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
@@ -805,7 +828,7 @@ def fetch_schwab_eod_bars(
         raise ProviderUnavailable("Schwab access token is not configured")
     ttl_seconds = int(getattr(config, "eod_market_data_cache_ttl_seconds", EOD_CACHE_TTL_SECONDS))
     end = end_date or datetime.now(timezone.utc)
-    start = end - timedelta(days=max(int(lookback_bars * 2), 30))
+    start = start_date or end - timedelta(days=max(int(lookback_bars * 2), 30))
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     for symbol in [item.upper() for item in symbols]:
         cached = (
@@ -832,7 +855,11 @@ def fetch_schwab_eod_bars(
             },
             headers=_bearer_auth_header(token),
         )
-        bars = _schwab_candles_to_bars(payload).tail(lookback_bars).reset_index(drop=True)
+        bars = filter_bar_range(
+            _schwab_candles_to_bars(payload),
+            start_date,
+            end_date,
+        ).tail(lookback_bars).reset_index(drop=True)
         _write_duckdb_bars(EOD_MARKET_CATEGORY, "schwab", symbol, "1d", bars, ttl_seconds=ttl_seconds)
         bars_by_symbol[symbol] = bars
     return bars_by_symbol
@@ -846,22 +873,30 @@ def fetch_eod_market_bars(
     force_refresh: bool = False,
     provider: str | None = None,
     data_client=None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> dict[str, pd.DataFrame]:
+    range_kwargs = {
+        key: value
+        for key, value in {"start_date": start_date, "end_date": end_date}.items()
+        if value is not None
+    }
     providers = [provider.lower()] if provider else [
         item.lower()
         for item in getattr(config, "eod_market_data_provider_order", [])
     ] or [item.lower() for item in getattr(config, "market_data_provider_order", [])] or ["alpaca"]
     fetchers = {
-        "yfinance": lambda: fetch_yfinance_eod_bars(symbols, config, lookback_bars=lookback_bars, force_refresh=force_refresh),
+        "yfinance": lambda: fetch_yfinance_eod_bars(symbols, config, lookback_bars=lookback_bars, force_refresh=force_refresh, **range_kwargs),
         "alpaca": lambda: fetch_alpaca_eod_bars(
                 symbols,
                 config,
                 lookback_bars=lookback_bars,
                 force_refresh=force_refresh,
                 data_client=data_client,
+                **range_kwargs,
             ),
-        "finnhub": lambda: fetch_finnhub_eod_bars(symbols, config, lookback_bars=lookback_bars, force_refresh=force_refresh),
-        "schwab": lambda: fetch_schwab_eod_bars(symbols, config, lookback_bars=lookback_bars, force_refresh=force_refresh),
+        "finnhub": lambda: fetch_finnhub_eod_bars(symbols, config, lookback_bars=lookback_bars, force_refresh=force_refresh, **range_kwargs),
+        "schwab": lambda: fetch_schwab_eod_bars(symbols, config, lookback_bars=lookback_bars, force_refresh=force_refresh, **range_kwargs),
     }
     empty = {symbol.upper(): pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"]) for symbol in symbols}
     for index, provider_name in enumerate(providers):
@@ -940,6 +975,7 @@ def fetch_finnhub_intraday_bars(
     *,
     lookback_bars: int,
     bar_minutes: int = 30,
+    start_date: datetime | None = None,
     end_date: datetime | None = None,
     force_refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
@@ -956,7 +992,7 @@ def fetch_finnhub_intraday_bars(
     trading_minutes_per_day = 390
     needed_sessions = max(1, math.ceil((bar_minutes * lookback_bars) / trading_minutes_per_day))
     calendar_days = max(7, (needed_sessions * 3) + 2)
-    start = end - timedelta(days=calendar_days)
+    start = start_date or end - timedelta(days=calendar_days)
     resolution = str(int(bar_minutes))
     timeframe = _timeframe_from_minutes(bar_minutes)
     bars_by_symbol: dict[str, pd.DataFrame] = {}
@@ -992,7 +1028,11 @@ def fetch_finnhub_intraday_bars(
                     "token": key,
                 },
             )
-            bars = _finnhub_candles_to_bars(payload).tail(lookback_bars).reset_index(drop=True)
+            bars = filter_bar_range(
+                _finnhub_candles_to_bars(payload),
+                start_date,
+                end_date,
+            ).tail(lookback_bars).reset_index(drop=True)
         except ProviderUnavailable as exc:
             logger.warning("Skipping Finnhub intraday bars for %s after provider error: %s", symbol, exc)
             bars = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])

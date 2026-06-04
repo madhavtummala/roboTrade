@@ -1037,16 +1037,6 @@ function configureBacktestPeriod(period) {
   BACKTEST_LABEL = label;
 }
 
-function purgeLegacyStoredBacktests() {
-  try {
-    Object.keys(window.localStorage)
-      .filter((key) => key.startsWith("tradingBot.backtests."))
-      .forEach((key) => window.localStorage.removeItem(key));
-  } catch (_error) {
-    // Browser storage cleanup is best-effort.
-  }
-}
-
 function renderAlgorithmDeck() {
   const deck = $("#algorithmDeck");
   if (!deck) return;
@@ -2086,7 +2076,6 @@ function handleSignalCardClick(event) {
 
 async function init() {
   wireEvents();
-  purgeLegacyStoredBacktests();
   renderAlgorithmDeck();
   renderOptionsDeck();
   renderOptionsPower();

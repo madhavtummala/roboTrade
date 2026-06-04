@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRADING_OPTIONS_BOT_FILE=/config/options_bot.yaml \
     TRADING_DCA_BOT_FILE=/config/dca_bot.yaml \
     TRADING_UNIVERSE_FILE=/config/universe.yaml \
-    STATE_DUCKDB_PATH=/data/trading_bot.duckdb \
+    STATE_DUCKDB_PATH=/data/walbot.duckdb \
     TRADABLES_CSV=/app/data/tradable_etfs.csv \
     ALPHA_VANTAGE_NEWS_CSV=/data/social_trends.csv
 

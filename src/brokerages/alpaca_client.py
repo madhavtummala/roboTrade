@@ -61,6 +61,77 @@ def get_positions(trading_client: TradingClient) -> dict[str, int]:
     return parsed
 
 
+def _bool_attr(obj, name: str, default: bool = False) -> bool:
+    value = getattr(obj, name, default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _float_attr(obj, name: str, default: float = 0.0) -> float:
+    try:
+        return float(getattr(obj, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def validate_short_sale_feasibility(
+    trading_client: TradingClient,
+    symbol: str,
+    quantity: int,
+    target_shares: int,
+    latest_price: float,
+) -> dict[str, object]:
+    """Check Alpaca account and asset constraints before opening or increasing a short."""
+    if quantity <= 0:
+        return {"shortable": False, "reason": "quantity must be positive"}
+    if target_shares >= 0:
+        return {"shortable": True, "reason": "order does not leave a short position"}
+    if latest_price <= 0:
+        return {"shortable": False, "reason": "latest price must be positive"}
+
+    try:
+        account = trading_client.get_account()
+    except Exception as exc:
+        return {"shortable": False, "reason": f"unable to verify account shorting permissions: {exc}"}
+
+    if not _bool_attr(account, "shorting_enabled"):
+        return {"shortable": False, "reason": "account shorting is not enabled"}
+    if _bool_attr(account, "trading_blocked") or _bool_attr(account, "account_blocked"):
+        return {"shortable": False, "reason": "account trading is blocked"}
+
+    try:
+        asset = trading_client.get_asset(symbol)
+    except Exception as exc:
+        return {"shortable": False, "reason": f"unable to verify asset shortability: {exc}"}
+
+    checks = {
+        "tradable": _bool_attr(asset, "tradable"),
+        "shortable": _bool_attr(asset, "shortable"),
+        "easy_to_borrow": _bool_attr(asset, "easy_to_borrow"),
+        "marginable": _bool_attr(asset, "marginable", True),
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    if failed:
+        return {"shortable": False, "reason": f"{symbol} failed Alpaca asset checks: {', '.join(failed)}", "checks": checks}
+
+    short_notional_after = abs(target_shares) * latest_price
+    buying_power = _float_attr(account, "buying_power")
+    if buying_power > 0 and short_notional_after > buying_power:
+        return {
+            "shortable": False,
+            "reason": f"target short notional ${short_notional_after:.2f} exceeds buying power ${buying_power:.2f}",
+            "checks": checks,
+        }
+
+    return {
+        "shortable": True,
+        "reason": "account and asset are short-sale eligible",
+        "checks": checks,
+        "short_notional_after": short_notional_after,
+    }
+
+
 def is_market_open(trading_client: TradingClient) -> bool:
     try:
         clock = trading_client.get_clock()
@@ -191,6 +262,7 @@ def get_historical_intraday_bars(
     lookback_bars: int,
     bar_minutes: int = 30,
     data_client: StockHistoricalDataClient | None = None,
+    start_date: datetime | None = None,
     end_date: datetime | None = None,
     data_feed: str | DataFeed | None = "iex",
 ) -> dict[str, "pd.DataFrame"]:
@@ -206,7 +278,7 @@ def get_historical_intraday_bars(
     trading_minutes_per_day = 390
     needed_sessions = max(1, math.ceil((bar_minutes * lookback_bars) / trading_minutes_per_day))
     calendar_days = max(7, (needed_sessions * 3) + 2)
-    start = end - timedelta(days=calendar_days)
+    start = start_date or end - timedelta(days=calendar_days)
     timeframe = TimeFrame(bar_minutes, TimeFrameUnit.Minute)
 
     bars_by_symbol: dict[str, pd.DataFrame] = {}

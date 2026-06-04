@@ -70,7 +70,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             bot_runtime.stop()
 
 
-app = FastAPI(title="Trading Bot API", lifespan=lifespan)
+app = FastAPI(title="Walbot API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

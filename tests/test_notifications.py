@@ -36,7 +36,7 @@ def test_format_portfolio_change_message_ignores_non_submitted_orders() -> None:
     )
 
     assert message == (
-        "Trading Bot 🤖 💰 💸\n"
+        "Walbot 🤖 💰 💸\n"
         "Portfolio changes submitted: 1 order\n"
         "BUY BBB qty=3 target_weight=25.00% current=0 target=3 trade_dollars=300.00 order_id=order-1"
     )

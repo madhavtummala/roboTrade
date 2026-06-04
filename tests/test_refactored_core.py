@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 from datetime import datetime, timezone
 from src.core.interfaces import MarketDataRequest
-from src.data.store import DataStore
+from src.data.duckdb_store import DataStore
 from src.data.repository import DataRepository
 from src.connectors.market.yfinance import YFinanceConnector
 
@@ -25,14 +25,13 @@ def test_yfinance_connector_caching(tmp_path, monkeypatch):
     
     # Mock yfinance to avoid actual network calls
     mock_df = pd.DataFrame({
-        "timestamp": [datetime.now(timezone.utc)],
-        "open": [150.0],
-        "high": [155.0],
-        "low": [149.0],
-        "close": [152.0],
-        "volume": [1000000]
-    })
-    monkeypatch.setattr("yfinance.Ticker.history", lambda *_args, **_kwargs: mock_df)
+        "Open": [150.0],
+        "High": [155.0],
+        "Low": [149.0],
+        "Close": [152.0],
+        "Volume": [1000000]
+    }, index=pd.DatetimeIndex([datetime.now(timezone.utc)], name="Date"))
+    monkeypatch.setattr("yfinance.download", lambda *_args, **_kwargs: mock_df)
     
     connector = YFinanceConnector({"enabled": True}, store=store)
     req = MarketDataRequest(symbols=["AAPL"], timeframe="1d")

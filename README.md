@@ -1,6 +1,6 @@
-# WalBet - Pluggable Trading Bot
+# Walbot - Pluggable Trading Platform
 
-WalBet is a plugin-oriented trading automation platform with optional agent integration. It supports modular market data connectors, sentiment analysis, extensible trading algorithms, MCP-facing tools for agent runtimes, and automatic DuckDB caching.
+Walbot is a plugin-oriented trading automation platform with optional agent integration. It supports modular market data connectors, sentiment analysis, extensible trading algorithms, MCP-facing tools for agent runtimes, and automatic DuckDB caching.
 
 ## Architecture
 
@@ -71,7 +71,7 @@ TRADING_ALGORITHMS_FILE=config/algorithms.yaml
 TRADING_OPTIONS_BOT_FILE=config/options_bot.yaml
 TRADING_DCA_BOT_FILE=config/dca_bot.yaml
 TRADING_UNIVERSE_FILE=config/universe.yaml
-STATE_DUCKDB_PATH=data/trading_bot.duckdb
+STATE_DUCKDB_PATH=data/walbot.duckdb
 ALPHA_VANTAGE_NEWS_CSV=data/social_trends.csv
 ```
 
@@ -111,21 +111,29 @@ Current config files:
 Warm or refresh the local YFinance market-data cache:
 
 ```bash
-python -m src.data.cache_warmup --clear
+python -m src.data.cache_warmup
 ```
 
-By default this refreshes the configured algorithm universe with enough daily EOD bars for the configured backtest period and recent 15-minute intraday bars. Use `--symbols SPY QQQM` to warm a smaller set.
+By default this refreshes the configured algorithm universe with enough daily EOD bars for the configured backtest period and recent 15-minute intraday bars. Existing cached rows are preserved unless `--clear` is supplied.
+
+Warm only the `fast_momentum` symbols for one America/Chicago market date:
+
+```bash
+python -m src.data.cache_warmup --algorithm fast_momentum --start-date 2026-06-03 --end-date 2026-06-03
+```
+
+Use `--eod` or `--intraday` to warm only that bar category. Use `--symbols SPY QQQM` instead of `--algorithm` to warm an explicit symbol list.
 
 Docker defaults to `--bot`. To run agent-facing tool mode:
 
 ```bash
-docker run --rm -p 8000:8000 -p 8001:8001 ghcr.io/madhavtummala/robotrade:latest --mcp
+docker run --rm -p 8000:8000 -p 8001:8001 ghcr.io/madhavtummala/walbot:latest --mcp
 ```
 
 With compose:
 
 ```bash
-TRADING_BOT_MODE=--mcp docker compose up
+WALBOT_MODE=--mcp docker compose up
 ```
 
 Run tests:

@@ -132,15 +132,19 @@ def test_warm_market_data_cache_forces_yfinance_fetches(monkeypatch) -> None:
     calls = []
     bars = _bars(["2026-01-02"])
 
-    def fake_eod(symbols, _config, *, lookback_bars, force_refresh, provider):
-        calls.append(("eod", symbols, lookback_bars, force_refresh, provider))
+    def fake_eod(symbols, _config, *, lookback_bars, force_refresh, provider, start_date, end_date):
+        calls.append(("eod", symbols, lookback_bars, force_refresh, provider, start_date, end_date))
         return {symbol: bars for symbol in symbols}
 
-    def fake_intraday(symbols, _config, *, lookback_bars, bar_minutes, force_refresh, provider):
-        calls.append(("intraday", symbols, lookback_bars, bar_minutes, force_refresh, provider))
+    def fake_intraday(symbols, _config, *, lookback_bars, bar_minutes, force_refresh, provider, start_date, end_date):
+        calls.append(("intraday", symbols, lookback_bars, bar_minutes, force_refresh, provider, start_date, end_date))
         return {symbol: bars for symbol in symbols}
 
-    monkeypatch.setattr(cache_warmup, "get_config", lambda: object())
+    class MockConfig:
+        eod_market_data_provider_order = ["yfinance"]
+        intraday_market_data_provider_order = ["yfinance"]
+
+    monkeypatch.setattr(cache_warmup, "get_config", lambda: MockConfig())
     monkeypatch.setattr(cache_warmup, "_clear_market_cache", lambda *_args, **_kwargs: {"eod_duckdb_rows": 0})
     monkeypatch.setattr(cache_warmup, "market_bars_summary", lambda **_kwargs: [{"symbol": "SPY", "rows": 1}])
     monkeypatch.setattr("src.connectors.fetch_eod_market_bars", fake_eod)
@@ -151,6 +155,70 @@ def test_warm_market_data_cache_forces_yfinance_fetches(monkeypatch) -> None:
     assert result["fetched"]["eod_rows"] == {"SPY": 1}
     assert result["fetched"]["intraday_rows"] == {"SPY": 1}
     assert calls == [
-        ("eod", ["SPY"], 98, True, "yfinance"),
-        ("intraday", ["SPY"], 78, 15, True, "yfinance"),
+        ("eod", ["SPY"], 98, True, "yfinance", None, None),
+        ("intraday", ["SPY"], 78, 15, True, "yfinance", None, None),
     ]
+
+
+def test_warm_market_data_cache_selects_algorithm_intraday_date_range(monkeypatch) -> None:
+    calls = []
+    bars = _bars(["2026-06-03T15:00:00Z"])
+
+    monkeypatch.setattr(cache_warmup, "_algorithm_symbols", lambda algorithm_id=None: ["QQQM", "BIL"])
+    class MockConfig:
+        eod_market_data_provider_order = ["yfinance"]
+        intraday_market_data_provider_order = ["yfinance"]
+
+    monkeypatch.setattr(cache_warmup, "get_config", lambda: MockConfig())
+    monkeypatch.setattr(cache_warmup, "market_bars_summary", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        "src.connectors.fetch_intraday_market_bars",
+        lambda symbols, _config, **kwargs: calls.append((symbols, kwargs)) or {symbol: bars for symbol in symbols},
+    )
+    monkeypatch.setattr(
+        "src.connectors.fetch_eod_market_bars",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("EOD should not be fetched")),
+    )
+
+    result = cache_warmup.warm_market_data_cache(
+        algorithm_id="fast_momentum",
+        start_date="2026-06-03",
+        end_date="2026-06-03",
+        warm_eod=False,
+        warm_intraday=True,
+    )
+
+    symbols, kwargs = calls[0]
+    assert symbols == ["BIL", "QQQM"]
+    assert kwargs["lookback_bars"] == 26
+    assert kwargs["start_date"].isoformat() == "2026-06-03T05:00:00+00:00"
+    assert kwargs["end_date"].isoformat() == "2026-06-04T05:00:00+00:00"
+    assert result["cleared"] == {}
+    assert result["categories"] == {"eod": False, "intraday": True}
+
+
+def test_warm_market_data_cache_rejects_reversed_date_range() -> None:
+    try:
+        cache_warmup._parse_date_range("2026-06-04", "2026-06-03")
+    except ValueError as exc:
+        assert str(exc) == "start date must be on or before end date"
+    else:
+        raise AssertionError("Expected reversed date range to fail")
+
+
+def test_eod_date_range_uses_provider_timestamp_convention() -> None:
+    yfinance_start, yfinance_end = cache_warmup._parse_date_range(
+        "2026-06-03",
+        "2026-06-03",
+        timezone_name=cache_warmup._eod_timezone("yfinance"),
+    )
+    start, end = cache_warmup._parse_date_range(
+        "2026-06-03",
+        "2026-06-03",
+        timezone_name=cache_warmup._eod_timezone("alpaca"),
+    )
+
+    assert yfinance_start.isoformat() == "2026-06-03T00:00:00+00:00"
+    assert yfinance_end.isoformat() == "2026-06-04T00:00:00+00:00"
+    assert start.isoformat() == "2026-06-03T04:00:00+00:00"
+    assert end.isoformat() == "2026-06-04T04:00:00+00:00"

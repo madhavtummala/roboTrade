@@ -37,7 +37,7 @@ __all__ = [
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve the Trading Bot dashboard.")
+    parser = argparse.ArgumentParser(description="Serve the Walbot dashboard.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8001, type=int)
     parser.add_argument("--reload", action="store_true")

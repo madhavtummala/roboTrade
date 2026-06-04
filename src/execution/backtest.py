@@ -119,6 +119,7 @@ def run_backtest(
     end_date: datetime | None = None,
     bars_by_symbol: dict[str, pd.DataFrame] | None = None,
     social_by_symbol: dict[str, pd.DataFrame] | None = None,
+    cache: bool = False,
 ) -> pd.DataFrame:
     config = get_config()
     if bars_by_symbol is None:
@@ -133,6 +134,9 @@ def run_backtest(
             alpaca_data_client=data_client,
             end_date=end_date,
             data_feed=config.alpaca_data_feed,
+            use_cache=True,
+            force_refresh=cache,
+            config=config,
         )
     if social_by_symbol is None:
         social_by_symbol = load_social_trends_csv(config.social_trends_csv, config.symbols)
@@ -244,8 +248,23 @@ def run_backtest(
 
 
 def main() -> None:
+    import argparse
+    from ..common.logging_utils import configure_logging
+    
+    parser = argparse.ArgumentParser(description="Run a backtest for the configured momentum strategy.")
+    parser.add_argument("--equity", type=float, default=10_000.0, help="Starting equity for the backtest.")
+    parser.add_argument("--end-date", help="End date for the backtest in YYYY-MM-DD format.")
+    parser.add_argument("--cache", action="store_true", help="Enable on-demand caching of missing data.")
+    args = parser.parse_args()
+
     configure_logging()
-    history_df = run_backtest()
+    
+    end_date = None
+    if args.end_date:
+        from datetime import datetime
+        end_date = datetime.fromisoformat(args.end_date)
+
+    history_df = run_backtest(starting_equity=args.equity, end_date=end_date, cache=args.cache)
     print(history_df.tail())
 
 

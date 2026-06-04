@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 
 from ..core.interfaces import MarketDataConnector, MarketDataRequest, SentimentDataConnector, SentimentDataRequest
-from ..data.store import DataStore
+from ..data.duckdb_store import DataStore
 
 logger = logging.getLogger(__name__)
 

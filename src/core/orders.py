@@ -1,12 +1,18 @@
 from __future__ import annotations
 import logging
-from math import floor
+from math import ceil, floor
 from uuid import uuid4
 
-from src.brokerages.alpaca_client import submit_market_order
+from src.brokerages.alpaca_client import submit_market_order, validate_short_sale_feasibility
 from src.notifications.service import request_trade_approval
 
 logger = logging.getLogger(__name__)
+
+
+def _shares_for_target_weight(investable_equity: float, target_weight: float, price: float) -> int:
+    target_dollar = investable_equity * target_weight
+    raw_shares = target_dollar / price
+    return floor(raw_shares) if raw_shares >= 0 else ceil(raw_shares)
 
 
 def plan_position_orders(
@@ -31,8 +37,7 @@ def plan_position_orders(
             logger.warning("Skipping %s because latest price is invalid: %s", symbol, price)
             continue
 
-        target_dollar = investable_equity * max(target_weight, 0.0)
-        target_shares = floor(target_dollar / price)
+        target_shares = _shares_for_target_weight(investable_equity, target_weight, price)
         current_shares = current_positions.get(symbol, 0)
         diff = target_shares - current_shares
         trade_dollars = abs(diff) * price
@@ -49,6 +54,7 @@ def plan_position_orders(
 
         side = "buy" if diff > 0 else "sell"
         quantity = abs(diff)
+        opens_or_increases_short = side == "sell" and target_shares < 0
         planned_orders.append(
             {
                 "symbol": symbol,
@@ -58,6 +64,18 @@ def plan_position_orders(
                 "target_shares": target_shares,
                 "current_shares": current_shares,
                 "trade_dollars": trade_dollars,
+                "latest_price": price,
+                "position_intent": (
+                    "sell_short"
+                    if opens_or_increases_short
+                    else "buy_to_cover"
+                    if side == "buy" and current_shares < 0
+                    else "sell_to_close"
+                    if side == "sell"
+                    else "buy_to_open"
+                ),
+                "opens_short": opens_or_increases_short,
+                "short_shares_after": abs(target_shares) if target_shares < 0 else 0,
             }
         )
 
@@ -87,17 +105,34 @@ def submit_planned_orders(
         symbol = str(desired_order["symbol"])
         side = str(desired_order["action"])
         quantity = int(desired_order["quantity"])
+        if bool(desired_order.get("opens_short")):
+            feasibility = validate_short_sale_feasibility(
+                trading_client,
+                symbol,
+                quantity=quantity,
+                target_shares=int(desired_order["target_shares"]),
+                latest_price=float(desired_order["latest_price"]),
+            )
+            if not feasibility["shortable"]:
+                logger.warning("Skipping short sale for %s: %s", symbol, feasibility["reason"])
+                order_results.append(
+                    {
+                        **desired_order,
+                        "action": "skip",
+                        "quantity": 0,
+                        "approval_status": "short_sale_not_feasible",
+                        "reason": feasibility["reason"],
+                    }
+                )
+                continue
         logger.info("Submitting %s order for %s qty=%s", side, symbol, quantity)
         order = submit_market_order(trading_client, symbol, side, quantity)
         order_results.append(
             {
+                **desired_order,
                 "symbol": symbol,
                 "action": side,
                 "quantity": quantity,
-                "target_weight": desired_order["target_weight"],
-                "target_shares": desired_order["target_shares"],
-                "current_shares": desired_order["current_shares"],
-                "trade_dollars": desired_order["trade_dollars"],
                 "order_id": getattr(order, "id", "unknown"),
             }
         )

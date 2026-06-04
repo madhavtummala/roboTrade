@@ -30,7 +30,7 @@ def _start_mcp_server(host: str, port: int, transport: str) -> subprocess.Popen:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Start the Trading Bot container runtime.")
+    parser = argparse.ArgumentParser(description="Start the Walbot container runtime.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--bot", action="store_true", help="Start the dashboard and built-in bot scheduler.")
     mode.add_argument("--mcp", action="store_true", help="Start the dashboard in tool mode plus the MCP tool server.")

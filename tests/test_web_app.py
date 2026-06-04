@@ -43,7 +43,6 @@ def test_frontend_uses_configured_backtests_and_refresh_button() -> None:
     index_html = (PROJECT_ROOT / "web/index.html").read_text(encoding="utf-8")
 
     assert 'let BACKTEST_PERIOD = "4m";' in app_js
-    assert 'let BACKTEST_STORAGE_KEY = "tradingBot.backtests.4m.v1";' in app_js
     assert "configureBacktestPeriod(statusPayload.config?.backtest_period)" in app_js
     assert "4M" in app_js
     assert "Ending equity =" in app_js

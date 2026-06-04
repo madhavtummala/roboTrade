@@ -234,7 +234,7 @@ def test_none_backtest_returns_flat_payload_without_market_data(monkeypatch) -> 
     monkeypatch.setattr(api_payloads, "_load_backtest_cache", lambda: {"version": 2, "items": {}})
     monkeypatch.setattr(api_payloads, "_save_backtest_cache", lambda cache: saved_cache.update(cache))
 
-    payload = backtest_payload({"strategy": "none", "refresh": True})
+    payload = backtest_payload({"strategy": "none", "refresh": True, "period": "4m"})
 
     assert payload["strategy"] == "none"
     assert payload["source"] == "flat"

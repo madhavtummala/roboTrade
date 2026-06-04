@@ -10,7 +10,7 @@ import pandas as pd
 from src.data.universe import resolve_project_path
 
 
-DUCKDB_STATE_PATH = os.getenv("STATE_DUCKDB_PATH", "data/trading_bot.duckdb")
+DUCKDB_STATE_PATH = os.getenv("STATE_DUCKDB_PATH", "data/walbot.duckdb")
 MARKET_BAR_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume", "adjusted_close"]
 
 
@@ -389,3 +389,42 @@ def write_sentiment_records(
 def compact_storage(db_path: str = DUCKDB_STATE_PATH) -> None:
     with _connect(db_path) as connection:
         connection.execute("CHECKPOINT")
+
+
+class DuckDBStore:
+    def __init__(self, db_path: str = DUCKDB_STATE_PATH):
+        self.db_path = db_path
+        # Initialize schema by connecting
+        with _connect(self.db_path) as _:
+            pass
+
+    def get_market_bars(self, symbol: str, timeframe: str, provider: str, start: datetime, end: datetime) -> pd.DataFrame:
+        return read_market_bars(
+            category="market_data", # Default to market_data or infer from provider?
+            provider=provider,
+            symbol=symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+            db_path=self.db_path
+        )
+
+    def write_market_bars(self, symbol: str, timeframe: str, category: str, provider: str, df: pd.DataFrame, ttl_seconds: int = 3600):
+        return write_market_bars(
+            category=category,
+            provider=provider,
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=df,
+            ttl_seconds=ttl_seconds,
+            db_path=self.db_path
+        )
+
+    def cleanup_expired(self):
+        # duckdb_store functions don't currently support expiry directly in market_bars table, 
+        # but they do in api_cache. 
+        # For now, let's just checkpoint.
+        compact_storage(self.db_path)
+
+# Alias for backward compatibility with newer refactored code
+DataStore = DuckDBStore

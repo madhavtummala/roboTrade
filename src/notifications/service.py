@@ -64,7 +64,7 @@ def format_portfolio_change_message(order_results: list[dict[str, Any]]) -> str 
 
     noun = "order" if len(submitted_orders) == 1 else "orders"
     lines = [
-        "Trading Bot 🤖 💰 💸",
+        "Walbot 🤖 💰 💸",
         f"Portfolio changes submitted: {len(submitted_orders)} {noun}",
     ]
     lines.extend(_format_order_line(order) for order in submitted_orders)
@@ -75,7 +75,7 @@ def format_trade_approval_message(planned_orders: list[dict[str, Any]], approval
     noun = "order" if len(planned_orders) == 1 else "orders"
     total_dollars = sum(float(order.get("trade_dollars") or order.get("notional") or 0.0) for order in planned_orders)
     lines = [
-        "Trading Bot approval requested",
+        "Walbot approval requested",
         f"Approval ID: {approval_id}",
         f"Planned: {len(planned_orders)} {noun}, ${total_dollars:.2f}",
         "Reply with:",

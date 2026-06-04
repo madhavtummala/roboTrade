@@ -53,7 +53,7 @@ def request_trade_approval_payload(
 
 
 def create_mcp_server(host: str = "0.0.0.0", port: int = 8001):
-    mcp = _server("trading-bot", host, port)
+    mcp = _server("walbot", host, port)
 
     @mcp.tool()
     def get_status() -> dict[str, Any]:
@@ -116,7 +116,7 @@ def create_mcp_server(host: str = "0.0.0.0", port: int = 8001):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve Trading Bot MCP tools.")
+    parser = argparse.ArgumentParser(description="Serve Walbot MCP tools.")
     parser.add_argument("--host", default=os.getenv("MCP_HOST", "0.0.0.0"))
     parser.add_argument("--port", default=int(os.getenv("MCP_PORT", "8001")), type=int)
     parser.add_argument("--transport", default=os.getenv("MCP_TRANSPORT", "sse"))
