@@ -31,8 +31,9 @@ algorithms:
     - AGG
     - TLT
     max_positions: 4
-    max_single_position_weight: 0.25
+    max_single_position_weight: 0.5
     max_gross_exposure: 0.95
+    min_score_delta_to_replace: 0.10
     pullback_min_micro_return: -0.02
     min_risk_on_micro_return: 0.01
   invest_spy:

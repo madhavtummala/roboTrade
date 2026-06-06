@@ -37,6 +37,7 @@ class DefensiveMomentumConfig:
     min_risk_on_score: float = 0.0
     min_risk_on_micro_return: float = 0.0
     min_defensive_score: float = 0.0
+    min_score_delta_to_replace: float = 0.0
     per_trade_value_min: float = 50.0
     rebalance_threshold: float = 0.01
     w_price_nano: float = 0.25
@@ -99,6 +100,7 @@ class DefensiveMomentumConfig:
             min_risk_on_score=number("min_risk_on_score", defaults.min_risk_on_score),
             min_risk_on_micro_return=number("min_risk_on_micro_return", defaults.min_risk_on_micro_return),
             min_defensive_score=number("min_defensive_score", defaults.min_defensive_score),
+            min_score_delta_to_replace=number("min_score_delta_to_replace", defaults.min_score_delta_to_replace),
             per_trade_value_min=number("per_trade_value_min", getattr(config, "min_trade_dollars", defaults.per_trade_value_min)),
             rebalance_threshold=number("rebalance_threshold", getattr(config, "rebalance_threshold", defaults.rebalance_threshold)),
             w_price_nano=number("w_price_nano", defaults.w_price_nano),
@@ -297,8 +299,16 @@ def get_sentiment_snapshot(
 def decide_target_weights(
     scores_by_symbol: dict[str, dict[str, Any]],
     config: DefensiveMomentumConfig,
+    current_weights: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Rank eligible risk-on and defensive ETFs, then allocate dynamically by score."""
+    """Rank eligible risk-on and defensive ETFs, then allocate dynamically by score.
+
+    Current holdings can be protected from minor score-based turnover by requiring
+    a candidate symbol to exceed existing positions by config.min_score_delta_to_replace.
+    """
+    current_weights = dict(current_weights or {})
+    current_symbol_positions = {symbol for symbol, weight in current_weights.items() if weight > 0.0}
+    score_delta = max(config.min_score_delta_to_replace, 0.0)
     weights = {symbol: 0.0 for symbol in config.symbols}
 
     def ranked(
@@ -323,7 +333,10 @@ def decide_target_weights(
 
     candidates = ranked(config.risk_on_universe, config.min_risk_on_score, config.min_risk_on_micro_return)
     candidates.extend(ranked(config.defensive_universe, config.min_defensive_score))
-    candidates.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
+    candidates.sort(
+        key=lambda item: float(item.get("score", 0.0)) + (score_delta if item["symbol"] in current_symbol_positions else 0.0),
+        reverse=True,
+    )
     selected = candidates[: max(config.max_positions, 0)]
 
     if not selected:
@@ -483,8 +496,8 @@ def build_defensive_momentum_targets(
         for symbol in symbols
     }
     scores = compute_composite_scores(features, sentiment, strategy_config)
-    raw_weights = decide_target_weights(scores, strategy_config)
     current_weights = weights_from_positions(current_positions, latest_prices, equity)
+    raw_weights = decide_target_weights(scores, strategy_config, current_weights)
     target_weights = apply_risk_guards(raw_weights, scores, current_weights, equity, strategy_config)
     mode = allocation_mode(target_weights)
 

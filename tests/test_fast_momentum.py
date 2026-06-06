@@ -199,6 +199,27 @@ def test_risk_on_selection_requires_micro_floor() -> None:
     assert weights["BIL"] == 0.25
 
 
+def test_held_positions_require_score_gap_before_replacement() -> None:
+    config = DefensiveMomentumConfig(
+        risk_on_universe=["QQQ", "XSD"],
+        defensive_universe=["BIL"],
+        max_positions=1,
+        max_single_position_weight=0.25,
+        min_score_delta_to_replace=0.10,
+    )
+    scores = {
+        "QQQ": {"symbol": "QQQ", "score": 1.00, "macro_trend_ok": True},
+        "XSD": {"symbol": "XSD", "score": 1.05, "macro_trend_ok": True},
+        "BIL": {"symbol": "BIL", "score": 0.20, "macro_trend_ok": True},
+    }
+
+    weights = decide_target_weights(scores, config, {"QQQ": 0.25})
+
+    assert weights["QQQ"] == 0.25
+    assert weights["XSD"] == 0.0
+    assert weights["BIL"] == 0.0
+
+
 def test_dynamic_weights_follow_scores_with_position_caps() -> None:
     config = DefensiveMomentumConfig(
         risk_on_universe=["QQQ", "XSD"],
