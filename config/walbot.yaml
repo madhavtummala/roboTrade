@@ -17,6 +17,12 @@ accounts:
       api_secret_env: ALPACA_API_SECRET
       base_url: https://paper-api.alpaca.markets
       data_feed: iex
+    schwab_individual:
+      # Individual brokerage account. Reachable once Schwab consent is complete -- the
+      # account number is resolved to Schwab's opaque hash on first use.
+      label: Schwab Individual
+      broker: schwab
+      schwab_account_number: 3959-7066
     local_paper:
       label: Local Paper
       broker: paper
@@ -44,25 +50,48 @@ notifications:
       timeout_seconds: 5
 tradable_universe:
   master_list: data/tradable_etfs.csv
-  # Every symbol some algorithm can hold: the two momentum universes and their
-  # benchmarks and defensive sleeves, the SPY Rotation sleeves, and the DCA plan.
-  # Kept in step with those lists -- it decides what the Universe view shows and what
-  # gets priced when an algorithm does not declare its own symbols.
+  # A deliberately wider pool than any one algorithm trades: broad US, sectors,
+  # factors, international, commodities, crypto, credit and defensives. Screened from
+  # data/tradable_etfs.csv on 60-day median dollar volume (>= $1M on the IEX feed) and
+  # on having enough history for a 100-day gate, so anything here can actually be
+  # filled and scored. It decides what gets priced and cached, which is what makes a
+  # universe change a config edit rather than a data-gathering exercise.
   symbols:
+  - AGG
+  - ASHR
   - BIL
+  - EWC
   - EWJ
   - GLD
   - GPIX
+  - HYG
   - IBIT
+  - IEF
   - IEMG
   - IJH
+  - INDA
+  - IWM
+  - IWO
+  - JEPQ
+  - KBE
   - KRE
+  - PBW
   - QQQM
+  - QUAL
+  - RSP
+  - SCHD
+  - SCZ
   - SGOV
   - SH
+  - SLV
   - SPY
+  - TLT
+  - UNG
+  - USFR
+  - USMV
   - USO
   - VGK
+  - VTV
   - VXX
   - XBI
   - XOP
@@ -94,7 +123,7 @@ algorithm_bot:
     frequency: 1hr
   - id: b4
     strategy: dual_momentum
-    account_id: local_paper
+    account_id: schwab_individual
     enabled: false
     frequency: 1hr
 algorithms:
