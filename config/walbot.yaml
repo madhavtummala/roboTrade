@@ -103,21 +103,19 @@ algorithms:
     risk_on_universe:
     - QQQM
     - XSD
-    - PBD
-    - AIQ
+    - XBI
+    - XOP
+    - KRE
+    - XRT
+    - IJH
+    - IEMG
+    - EWJ
+    - VGK
+    - GLD
     - IBIT
     - USO
-    - IEMG
-    - HYG
-    - GLD
-    - GTEK
-    - BBC
-    - GVIP
     defensive_universe:
-    - BIL
-    - IEF
-    - AGG
-    - TLT
+    - SGOV
     max_positions: 4
     max_single_position_weight: 0.5
     max_gross_exposure: 0.95
@@ -155,7 +153,7 @@ algorithms:
     min_score_delta_to_replace: 0.35
     momentum_change_enter: 0
     cooldown_after_exit: 4
-    inverse_vol_sizing: false
+    volatility_tilt: 1.0
     name_weight_max: 0.5
     risk_on_gross_max: 1
     target_portfolio_vol: 0.3
