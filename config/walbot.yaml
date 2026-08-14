@@ -132,7 +132,10 @@ algorithms:
     percent_b_lookback: 20
     percent_b_threshold: 0.0
     rsi_lookback: 2
-    rsi_threshold: 10.0
+    # 5 rather than 10: same 12M return, but far better over 6M (13.7% against 0.2%)
+    # and 3M, at a third of the drawdown. Being pickier about what counts as a dip
+    # left it holding cash through the falls it used to buy into.
+    rsi_threshold: 5.0
     max_trade_multiple: 3.0
     max_monthly_multiple: 3.0
     value_averaging: true
@@ -156,7 +159,9 @@ algorithms:
     max_positions: 4
     max_single_position_weight: 0.5
     max_gross_exposure: 0.95
-    min_score_delta_to_replace: 0.1
+    # 0.35 rather than 0.10: measured better on every window -- +4pp at 6M with a
+    # smaller drawdown and fewer orders. It churned between near-identical scores.
+    min_score_delta_to_replace: 0.35
     pullback_min_micro_return: -0.02
     min_risk_on_micro_return: 0.01
   dual_momentum:
