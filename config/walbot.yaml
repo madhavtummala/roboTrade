@@ -60,7 +60,6 @@ tradable_universe:
   - AGG
 algorithm_bot:
   trading_account_id: paper
-  enabled: false
   strategy: dca
   backtest_period: 2m
   require_trade_approval: false
@@ -87,8 +86,6 @@ algorithm_bot:
     account_id: local_paper
     enabled: false
     frequency: 1hr
-runtime:
-  kill_switch: false
 algorithms:
   bursty_dca:
     regime_ma_days: 200
@@ -199,7 +196,6 @@ dca_bot:
         amount: 0
         items: []
 options_bot:
-  enabled: false
   strategy: none
   account_id: paper
 options:
