@@ -44,20 +44,31 @@ notifications:
       timeout_seconds: 5
 tradable_universe:
   master_list: data/tradable_etfs.csv
+  # Every symbol some algorithm can hold: the two momentum universes and their
+  # benchmarks and defensive sleeves, the SPY Rotation sleeves, and the DCA plan.
+  # Kept in step with those lists -- it decides what the Universe view shows and what
+  # gets priced when an algorithm does not declare its own symbols.
   symbols:
-  - SPY
-  - QQQ
-  - IBIT
-  - GLD
-  - TLT
-  - XSD
-  - VTI
-  - VTV
-  - PBD
-  - XBI
-  - GTEK
   - BIL
-  - AGG
+  - EWJ
+  - GLD
+  - GPIX
+  - IBIT
+  - IEMG
+  - IJH
+  - KRE
+  - QQQM
+  - SGOV
+  - SH
+  - SPY
+  - USO
+  - VGK
+  - VXX
+  - XBI
+  - XOP
+  - XRT
+  - XSD
+  - XYLD
 algorithm_bot:
   trading_account_id: paper
   strategy: dca
