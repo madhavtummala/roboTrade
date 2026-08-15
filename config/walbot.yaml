@@ -33,11 +33,21 @@ data_sources:
       yfinance: {}
   eod_market_data:
     providers:
+      # Schwab first, as with intraday: no rate limits, and four years of daily history.
+      # /pricehistory has no adjustment parameter, so the connector back-adjusts closes from
+      # the dividend metadata on /quotes -- without that, SGOV loses 3.8% a year and JEPQ
+      # 12.5%, which would penalise every payer in a cross-sectional ranking. The
+      # reconstruction assumes a regular schedule at the trailing average payment, measured
+      # within ~0.5% of Alpaca's exact series for most symbols and 1.8% at worst (XYLD).
+      schwab: {}
+      # Alpaca stays as the fallback and the reference: fetched with Adjustment.ALL, so its
+      # closes are exactly total-return, over six years.
       alpaca:
         api_key_env: ALPACA_API_KEY
         api_secret_env: ALPACA_API_SECRET
       yfinance: {}
-      schwab: {}
+      # finnhub:
+      #   api_key_env: FINNHUB_API_KEY
   sentiment_data:
     providers: null
 notifications:
