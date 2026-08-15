@@ -34,14 +34,14 @@ data_sources:
   eod_market_data:
     providers:
       # Schwab first, as with intraday: no rate limits, and four years of daily history.
-      # /pricehistory has no adjustment parameter, so the connector back-adjusts closes from
-      # the dividend metadata on /quotes -- without that, SGOV loses 3.8% a year and JEPQ
-      # 12.5%, which would penalise every payer in a cross-sectional ranking. The
-      # reconstruction assumes a regular schedule at the trailing average payment, measured
-      # within ~0.5% of Alpaca's exact series for most symbols and 1.8% at worst (XYLD).
+      # /pricehistory returns raw prices, which is exactly what is wanted -- cached bars are a
+      # record of what the market printed and are never adjusted here. Distributions are cash
+      # events instead: fetched into the `dividends` table (see data_sources.dividends), booked
+      # as income by the ledger, and compounded on demand for the momentum signal.
       schwab: {}
-      # Alpaca stays as the fallback and the reference: fetched with Adjustment.ALL, so its
-      # closes are exactly total-return, over six years.
+      # Alpaca stays as the fallback, over six years. Note it serves Adjustment.ALL, so its
+      # closes are total-return rather than raw -- the one feed whose `adjusted_close` is its
+      # own and not something this project derived.
       alpaca:
         api_key_env: ALPACA_API_KEY
         api_secret_env: ALPACA_API_SECRET
@@ -66,8 +66,20 @@ tradable_universe:
   # on having enough history for a 100-day gate, so anything here can actually be
   # filled and scored. It decides what gets priced and cached, which is what makes a
   # universe change a config edit rather than a data-gathering exercise.
+  #
+  # The defensive tier is deliberately thin. Measured on daily returns since 2023,
+  # BIL/SGOV/USFR correlate 0.95-0.99 at an identical 1.2% annual volatility, and IEF/AGG
+  # correlate 0.98 -- so USFR, IEF and AGG were dropped as duplicates rather than as
+  # opinions. What remains spans genuinely different exposures: SGOV and BIL for cash,
+  # TLT for duration (correlation -0.10 to cash, 14.2% vol), HYG for credit (0.42-0.46
+  # against everything, and it falls *with* equities, so it is not a hiding place).
+  #
+  # VTEB is the one holding here chosen for tax rather than for signal: federally exempt
+  # municipal income, which only pays off in the taxable Schwab account and only if held
+  # long enough to earn it. It carries ~6-7 years of duration, so it is not a cash
+  # substitute, and rotating it on a momentum horizon would realise short-term gains that
+  # outweigh the exemption. Route it through DCA, not a defensive_universe.
   symbols:
-  - AGG
   - ASHR
   - BIL
   - EWC
@@ -76,7 +88,6 @@ tradable_universe:
   - GPIX
   - HYG
   - IBIT
-  - IEF
   - IEMG
   - IJH
   - INDA
@@ -97,10 +108,10 @@ tradable_universe:
   - SPY
   - TLT
   - UNG
-  - USFR
   - USMV
   - USO
   - VGK
+  - VTEB
   - VTV
   - VXX
   - XBI
