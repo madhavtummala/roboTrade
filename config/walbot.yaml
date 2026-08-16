@@ -30,7 +30,7 @@ data_sources:
   intraday_market_data:
     providers:
       schwab: {}
-      yfinance: {}
+      # yfinance: {}
   eod_market_data:
     providers:
       # Schwab first, as with intraday: no rate limits, and four years of daily history.
@@ -42,14 +42,21 @@ data_sources:
       # Alpaca stays as the fallback, over six years. Note it serves Adjustment.ALL, so its
       # closes are total-return rather than raw -- the one feed whose `adjusted_close` is its
       # own and not something this project derived.
+      # alpaca:
+      #   api_key_env: ALPACA_API_KEY
+      #   api_secret_env: ALPACA_API_SECRET
+      # yfinance: {}
+  sentiment_data:
+    providers: null
+  dividends:
+    providers:
+      # Alpaca first: real ex-date/payable-date events from the corporate-actions
+      # API. yfinance is the no-credentials fallback; it only reports the ex-date.
       alpaca:
         api_key_env: ALPACA_API_KEY
         api_secret_env: ALPACA_API_SECRET
       yfinance: {}
-      # finnhub:
-      #   api_key_env: FINNHUB_API_KEY
-  sentiment_data:
-    providers: null
+
 notifications:
   providers:
     telegram:
@@ -122,7 +129,7 @@ tradable_universe:
 algorithm_bot:
   trading_account_id: paper
   strategy: dca
-  backtest_period: 2m
+  backtest_period: 3m
   require_trade_approval: false
   trade_approval_timeout_seconds: 300
   trade_approval_poll_seconds: 5
