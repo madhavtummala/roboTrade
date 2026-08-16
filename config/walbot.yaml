@@ -207,6 +207,13 @@ algorithms:
     - GLD
     - IBIT
     - USO
+    - SPY
+    - IWM
+    - RSP
+    - QUAL
+    - VTV
+    - SCHD
+    - SLV
     defensive_universe:
     - SGOV
     benchmark: QQQM
@@ -216,14 +223,16 @@ algorithms:
     etf_min_abs_return: 0
     etf_min_fast_return: -0.02
     risk_adjusted_score: false
-    max_positions: 4
-    entry_rank_max: 4
-    exit_rank_max: 6
+    max_positions: 8
+    entry_rank_max: 8
+    exit_rank_max: 10
+    rebalance_weight_threshold: 0.08
+    cash_buffer: 0.08
     min_base_score: 0.0
     min_score_delta_to_replace: 0.35
     momentum_change_enter: 0
     cooldown_after_exit: 4
-    volatility_tilt: 1.0
+    volatility_tilt: -1.0
     name_weight_max: 0.5
     risk_on_gross_max: 1
     target_portfolio_vol: 0.3
