@@ -235,7 +235,22 @@ algorithms:
     # SGOV and nothing else. (An account-level cash_buffer of 2% still applies at funding.)
     risk_on_gross_max: 1.0
     name_weight_max: 0.5
-    volatility_tilt: -1.0
+    # Was -1.0, full risk parity, which sizes *down* precisely the high-volatility names a
+    # momentum book is selecting for. Measured across three disjoint calendar years:
+    #
+    #   net_return_5bps      2023    2024    2025    mean
+    #   -1.0 (was)         +14.31   -4.39  +11.12    7.01
+    #   +0.5 (now)         +17.61   -2.93  +12.74    9.14
+    #
+    # Chosen over the other 2023 winners because it is the only one that wins 2023 without
+    # giving it back elsewhere: name_weight_max=0.35 scored a near-identical 2023 (+17.87) and
+    # then cost 4.8pp of 2025, which is what a window-specific fit looks like. The 2023 axis
+    # sweep is also monotone through -1.0/-0.5/0.0/+0.5 and turns back down at +1.0, so this is
+    # an interior optimum rather than a boundary the grid happened to stop at.
+    #
+    # It does not fix 2024, where the strategy still loses money after costs, and it does not
+    # beat SPY: +23.90% gross over 2023 against SPY's +24.81%, before any spread is paid.
+    volatility_tilt: 0.5
     # --- gates: OFF, pending measurement --------------------------------------------------
     # breadth_min 0 disables the regime gate entirely: risk-off now happens only when nothing
     # passes eligibility, which analyze_universe already handles by holding the defensive
