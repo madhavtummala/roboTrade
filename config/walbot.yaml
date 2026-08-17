@@ -223,6 +223,18 @@ dca_bot:
       sell:
         amount: 0
         items: []
+    local_paper:
+      max_item_amount: 2000.0
+      buy:
+        amount: 674.0
+        items:
+        - symbol: GLD
+          amount: 337.0
+        - symbol: XSD
+          amount: 337.0
+      sell:
+        amount: 0
+        items: []
 options_bot:
   strategy: none
   account_id: paper
