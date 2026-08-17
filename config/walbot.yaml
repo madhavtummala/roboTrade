@@ -254,12 +254,12 @@ algorithms:
     cooldown_after_exit: 4
     risk_adjusted_score: false
     # --- drawdown protection: to be revisited ---------------------------------------------
-    # The volatility overlay never engaged once in 2023, and intraday_drawdown_limit is inert
-    # at a once-a-day cadence: the breaker rebases its session high on every run, so the
-    # measured drawdown is always exactly zero.
+    # The volatility overlay never engaged once in 2023. The session breaker that used to sit
+    # here is gone rather than switched off: it rebased its session high on every run, so at a
+    # once-a-day cadence the drawdown it measured was always exactly zero. max_daily_drop is
+    # the stop that actually works at this cadence.
     target_portfolio_vol: 0.3
     high_vol_trigger: 1.3
-    intraday_drawdown_limit: -0.015
     sentiment_size_scale: 0
   invest_spy:
     spy_symbol: SPY
