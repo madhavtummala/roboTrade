@@ -144,11 +144,6 @@ algorithms:
     pullback_min_micro_return: -0.02
     min_risk_on_micro_return: 0.01
   dual_momentum:
-    # Pruned from 20 by within-theme correlation over 2022-09..2026-08. Dropped as
-    # near-duplicates of a name that stayed: QUAL (0.97 with SPY), VTV and RSP (0.95 with each
-    # other, 0.82-0.86 with SPY), IJH (0.95 with IWM). Kept where the pair diverges enough to
-    # be a real choice: QQQM/XSD correlate 0.86 but their returns differ by 78 points, GLD/SLV
-    # by 67, XOP/USO by 50.
     risk_on_universe:
     - QQQM
     - XSD
@@ -160,7 +155,6 @@ algorithms:
     - EWJ
     - VGK
     - GLD
-    - IBIT
     - USO
     - SPY
     - IWM
@@ -169,28 +163,12 @@ algorithms:
     defensive_universe:
     - SGOV
     benchmark: QQQM
-    # --- the core strategy: rank, filter on absolute momentum, hold the top k ------------
-    # Every layer beyond these is switched off for now. They are being reintroduced one at a
-    # time, measured, rather than carried because they were in the original spec.
-    max_positions: 4
-    entry_rank_max: 4
-    # A wide backstop, not the exit rule. A holding leaves when it stops being eligible --
-    # below its own 100-day average, or its 60/20-day return floors -- which is a real change
-    # in the asset. Ejecting on rank instead meant an incumbent that slipped to 7th of 14 on
-    # scores separated by 0.15 was sold, and the freed slot refilled from the top with no
-    # margin required: 15 of 21 sessions changed membership in June 2023.
+    max_positions: 2
+    entry_rank_max: 3
     exit_rank_max: 12
-    min_base_score: 0.0
-    # Displacing a whole theme takes a full margin; rotating names inside one takes more,
-    # since swapping QQQM for XSD is not a change of view.
+    min_base_score: 0
     min_score_delta_to_replace: 0.35
     intra_theme_delta_to_replace: 0.5
-    # Themes are what the book enters and exits, with persistence. Within a selected theme
-    # the split across its ETFs is recomputed from scores every day with no confirmation --
-    # slow about *what* to own, fast about *how much* of each.
-    # Grouping is from measured daily-return correlation over 2022-09..2026-08, not judgement:
-    # {SPY,IWM,RSP,QUAL,VTV} cluster at 0.80 all-pairs, and eight of these names correlate
-    # 0.79+ with SPY. Symbols absent from the map are each their own theme.
     max_positions_per_theme: 2
     themes:
       SPY: us_large
@@ -209,70 +187,24 @@ algorithms:
       VGK: intl
       IEMG: intl
       IBIT: crypto
-    # Absolute momentum, per name. This is dual momentum's real risk control and the only
-    # filter left standing: a name must be above its own 100-day average, with a positive
-    # 60-day return and a 20-day return no worse than -2%.
     etf_min_abs_return: 0
     etf_min_fast_return: -0.02
-    # Hysteresis on the exit side: a holding is sold only once it is 3% past the floor it
-    # entered through, rather than the moment it grazes it.
     exit_threshold_slack: 0.05
-    # Quick to buy, slow to sell. Requiring 8 of 10 eligible days before entering cost
-    # 14pp over 2023 -- it sat 44% in bills through January waiting for names to settle.
-    # The exit side is where the persistence is worth having.
     eligibility_window: 10
     entry_min_eligible_days: 3
     exit_max_eligible_days: 3
-    # Per-name crash stop, checked ahead of every other exit rule.
-    max_daily_drop: 0.10
-    # cooldown_after_exit counts runs, and a run is risk_refresh_minutes. At the old 15 that
-    # made the 4-run cooldown 60 minutes -- inert at a once-a-day cadence, so a name sold on
-    # Monday could be bought back on Tuesday. A session makes it four sessions.
+    max_daily_drop: 0.1
     risk_refresh_minutes: 1440
-    # --- allocation: fully deployed, always ----------------------------------------------
-    # 1.0, not 0.96: there is no reason to hold cash. Whatever the per-name cap cannot deploy
-    # is parked in the defensive sleeve by park_residual, so the book is risk assets plus
-    # SGOV and nothing else. (An account-level cash_buffer of 2% still applies at funding.)
-    risk_on_gross_max: 1.0
-    name_weight_max: 0.5
-    # Was -1.0, full risk parity, which sizes *down* precisely the high-volatility names a
-    # momentum book is selecting for. Measured across three disjoint calendar years:
-    #
-    #   net_return_5bps      2023    2024    2025    mean
-    #   -1.0 (was)         +14.31   -4.39  +11.12    7.01
-    #   +0.5 (now)         +17.61   -2.93  +12.74    9.14
-    #
-    # Chosen over the other 2023 winners because it is the only one that wins 2023 without
-    # giving it back elsewhere: name_weight_max=0.35 scored a near-identical 2023 (+17.87) and
-    # then cost 4.8pp of 2025, which is what a window-specific fit looks like. The 2023 axis
-    # sweep is also monotone through -1.0/-0.5/0.0/+0.5 and turns back down at +1.0, so this is
-    # an interior optimum rather than a boundary the grid happened to stop at.
-    #
-    # It does not fix 2024, where the strategy still loses money after costs, and it does not
-    # beat SPY: +23.90% gross over 2023 against SPY's +24.81%, before any spread is paid.
+    theme_rotation_interval_days: 7
+    entry_interval_days: 5
+    intra_theme_interval_days: 5
+    exit_interval_days: 0
+    risk_on_gross_max: 1
+    name_weight_max: 0.65
     volatility_tilt: 0.5
-    # --- gates: OFF, pending measurement --------------------------------------------------
-    # breadth_min 0 disables the regime gate entirely: risk-off now happens only when nothing
-    # passes eligibility, which analyze_universe already handles by holding the defensive
-    # sleeve. The gate's only marginal effect was to zero the names that *did* qualify when
-    # few others did.
-    breadth_min: 0.0
-    regime_confirm_bars: 2
-    regime_exit_confirm_bars: 2
-    # Measured anti-predictive over 2023: names it let through returned -0.55% over the next
-    # 21 sessions against +0.12% for the ones it blocked (t=-2.91, p=0.004). It detects
-    # short-term reversal and treats it as acceleration.
-    require_entry_timing: false
-    momentum_change_enter: 0
-    # --- turnover hysteresis (kept: these are not gates, they are cost control) -----------
     rebalance_weight_threshold: 0.08
     cooldown_after_exit: 4
     risk_adjusted_score: false
-    # --- drawdown protection: to be revisited ---------------------------------------------
-    # The volatility overlay never engaged once in 2023. The session breaker that used to sit
-    # here is gone rather than switched off: it rebased its session high on every run, so at a
-    # once-a-day cadence the drawdown it measured was always exactly zero. max_daily_drop is
-    # the stop that actually works at this cadence.
     target_portfolio_vol: 0.3
     high_vol_trigger: 1.3
     sentiment_size_scale: 0
@@ -288,13 +220,7 @@ algorithms:
     - VXX
     flat_equity_income_exposure: 0.5
     max_crisis_hedge_exposure: 0.15
-    # The GROWING test used to demand meso_return >= 0 while FALLING triggered at <= -0.01,
-    # so a 1pp dead band dumped the whole book into FLAT on any slightly-down session. Closing
-    # it is hysteresis by proxy and roughly halves turnover.
     growth_meso_return: -0.01
-    # classify_spy_state has no memory, so a reading straddling a threshold flips the whole
-    # book. 5 was best in both the 2022 bear and the full 2022-2026 span, though the axis is
-    # not monotone (2 is worse than 1), so treat the exact value as weakly evidenced.
     state_confirm_bars: 5
 dca_bot:
   dca_plan:
