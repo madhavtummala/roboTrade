@@ -1,12 +1,3 @@
-# Walbot configuration -- one file, one mount, one thing to copy.
-#
-# Every section used to be its own file (accounts.yaml, connectors.yaml, dca_bot.yaml and
-# four more). The top-level keys never overlapped, so they merge here unchanged: the shapes
-# below are exactly what the loaders and the dashboard already read and write.
-#
-# Comments are lost whenever the dashboard saves -- it rewrites this file through yaml.dump.
-# Durable documentation for algorithm knobs lives in src/algorithms/explainers.py, which the
-# Tune tab renders.
 default: paper
 accounts:
   items:
@@ -18,8 +9,6 @@ accounts:
       base_url: https://paper-api.alpaca.markets
       data_feed: iex
     schwab_individual:
-      # Individual brokerage account. Reachable once Schwab consent is complete -- the
-      # account number is resolved to Schwab's opaque hash on first use.
       label: Schwab Individual
       broker: schwab
       schwab_account_number: 3959-7066
@@ -30,33 +19,17 @@ data_sources:
   intraday_market_data:
     providers:
       schwab: {}
-      # yfinance: {}
   eod_market_data:
     providers:
-      # Schwab first, as with intraday: no rate limits, and four years of daily history.
-      # /pricehistory returns raw prices, which is exactly what is wanted -- cached bars are a
-      # record of what the market printed and are never adjusted here. Distributions are cash
-      # events instead: fetched into the `dividends` table (see data_sources.dividends), booked
-      # as income by the ledger, and compounded on demand for the momentum signal.
       schwab: {}
-      # Alpaca stays as the fallback, over six years. Note it serves Adjustment.ALL, so its
-      # closes are total-return rather than raw -- the one feed whose `adjusted_close` is its
-      # own and not something this project derived.
-      # alpaca:
-      #   api_key_env: ALPACA_API_KEY
-      #   api_secret_env: ALPACA_API_SECRET
-      # yfinance: {}
   sentiment_data:
     providers: null
   dividends:
     providers:
-      # Alpaca first: real ex-date/payable-date events from the corporate-actions
-      # API. yfinance is the no-credentials fallback; it only reports the ex-date.
       alpaca:
         api_key_env: ALPACA_API_KEY
         api_secret_env: ALPACA_API_SECRET
       yfinance: {}
-
 notifications:
   providers:
     telegram:
@@ -67,25 +40,6 @@ notifications:
       timeout_seconds: 5
 tradable_universe:
   master_list: data/tradable_etfs.csv
-  # A deliberately wider pool than any one algorithm trades: broad US, sectors,
-  # factors, international, commodities, crypto, credit and defensives. Screened from
-  # data/tradable_etfs.csv on 60-day median dollar volume (>= $1M on the IEX feed) and
-  # on having enough history for a 100-day gate, so anything here can actually be
-  # filled and scored. It decides what gets priced and cached, which is what makes a
-  # universe change a config edit rather than a data-gathering exercise.
-  #
-  # The defensive tier is deliberately thin. Measured on daily returns since 2023,
-  # BIL/SGOV/USFR correlate 0.95-0.99 at an identical 1.2% annual volatility, and IEF/AGG
-  # correlate 0.98 -- so USFR, IEF and AGG were dropped as duplicates rather than as
-  # opinions. What remains spans genuinely different exposures: SGOV and BIL for cash,
-  # TLT for duration (correlation -0.10 to cash, 14.2% vol), HYG for credit (0.42-0.46
-  # against everything, and it falls *with* equities, so it is not a hiding place).
-  #
-  # VTEB is the one holding here chosen for tax rather than for signal: federally exempt
-  # municipal income, which only pays off in the taxable Schwab account and only if held
-  # long enough to earn it. It carries ~6-7 years of duration, so it is not a cash
-  # substitute, and rotating it on a momentum horizon would realise short-term gains that
-  # outweigh the exemption. Route it through DCA, not a defensive_universe.
   symbols:
   - ASHR
   - BIL
@@ -136,7 +90,7 @@ algorithm_bot:
   bindings:
   - id: b2
     strategy: dca
-    account_id: paper
+    account_id: local_paper
     enabled: false
     frequency: 1hr
   - id: b1
@@ -146,7 +100,7 @@ algorithm_bot:
     frequency: 1hr
   - id: b3
     strategy: bursty_dca
-    account_id: paper
+    account_id: local_paper
     enabled: false
     frequency: 1hr
   - id: b4
@@ -154,19 +108,18 @@ algorithm_bot:
     account_id: schwab_individual
     enabled: false
     frequency: 1hr
+  enabled: false
 algorithms:
   bursty_dca:
     regime_ma_days: 200
     percent_b_lookback: 20
     percent_b_threshold: 0.0
     rsi_lookback: 2
-    # 5 rather than 10: same 12M return, but far better over 6M (13.7% against 0.2%)
-    # and 3M, at a third of the drawdown. Being pickier about what counts as a dip
-    # left it holding cash through the falls it used to buy into.
-    rsi_threshold: 5.0
+    rsi_threshold: 10.0
     max_trade_multiple: 3.0
     max_monthly_multiple: 3.0
     value_averaging: true
+    backlog_relax_months: 1.0
   fast_momentum:
     risk_on_universe:
     - QQQM
@@ -187,12 +140,15 @@ algorithms:
     max_positions: 4
     max_single_position_weight: 0.5
     max_gross_exposure: 0.95
-    # 0.35 rather than 0.10: measured better on every window -- +4pp at 6M with a
-    # smaller drawdown and fewer orders. It churned between near-identical scores.
     min_score_delta_to_replace: 0.35
     pullback_min_micro_return: -0.02
     min_risk_on_micro_return: 0.01
   dual_momentum:
+    # Pruned from 20 by within-theme correlation over 2022-09..2026-08. Dropped as
+    # near-duplicates of a name that stayed: QUAL (0.97 with SPY), VTV and RSP (0.95 with each
+    # other, 0.82-0.86 with SPY), IJH (0.95 with IWM). Kept where the pair diverges enough to
+    # be a real choice: QQQM/XSD correlate 0.86 but their returns differ by 78 points, GLD/SLV
+    # by 67, XOP/USO by 50.
     risk_on_universe:
     - QQQM
     - XSD
@@ -200,7 +156,6 @@ algorithms:
     - XOP
     - KRE
     - XRT
-    - IJH
     - IEMG
     - EWJ
     - VGK
@@ -209,32 +164,99 @@ algorithms:
     - USO
     - SPY
     - IWM
-    - RSP
-    - QUAL
-    - VTV
     - SCHD
     - SLV
     defensive_universe:
     - SGOV
     benchmark: QQQM
-    breadth_min: 0.5
-    regime_confirm_bars: 2
-    regime_exit_confirm_bars: 2
+    # --- the core strategy: rank, filter on absolute momentum, hold the top k ------------
+    # Every layer beyond these is switched off for now. They are being reintroduced one at a
+    # time, measured, rather than carried because they were in the original spec.
+    max_positions: 4
+    entry_rank_max: 4
+    # A wide backstop, not the exit rule. A holding leaves when it stops being eligible --
+    # below its own 100-day average, or its 60/20-day return floors -- which is a real change
+    # in the asset. Ejecting on rank instead meant an incumbent that slipped to 7th of 14 on
+    # scores separated by 0.15 was sold, and the freed slot refilled from the top with no
+    # margin required: 15 of 21 sessions changed membership in June 2023.
+    exit_rank_max: 12
+    min_base_score: 0.0
+    # Displacing a whole theme takes a full margin; rotating names inside one takes more,
+    # since swapping QQQM for XSD is not a change of view.
+    min_score_delta_to_replace: 0.35
+    intra_theme_delta_to_replace: 0.5
+    # Themes are what the book enters and exits, with persistence. Within a selected theme
+    # the split across its ETFs is recomputed from scores every day with no confirmation --
+    # slow about *what* to own, fast about *how much* of each.
+    # Grouping is from measured daily-return correlation over 2022-09..2026-08, not judgement:
+    # {SPY,IWM,RSP,QUAL,VTV} cluster at 0.80 all-pairs, and eight of these names correlate
+    # 0.79+ with SPY. Symbols absent from the map are each their own theme.
+    max_positions_per_theme: 2
+    themes:
+      SPY: us_large
+      SCHD: us_large
+      IWM: us_smid
+      XRT: us_smid
+      QQQM: us_growth
+      XSD: us_growth
+      XBI: us_biotech
+      KRE: us_financials
+      XOP: energy
+      USO: energy
+      GLD: metals
+      SLV: metals
+      EWJ: intl
+      VGK: intl
+      IEMG: intl
+      IBIT: crypto
+    # Absolute momentum, per name. This is dual momentum's real risk control and the only
+    # filter left standing: a name must be above its own 100-day average, with a positive
+    # 60-day return and a 20-day return no worse than -2%.
     etf_min_abs_return: 0
     etf_min_fast_return: -0.02
-    risk_adjusted_score: false
-    max_positions: 8
-    entry_rank_max: 8
-    exit_rank_max: 10
-    rebalance_weight_threshold: 0.08
-    cash_buffer: 0.08
-    min_base_score: 0.0
-    min_score_delta_to_replace: 0.35
-    momentum_change_enter: 0
-    cooldown_after_exit: 4
-    volatility_tilt: -1.0
+    # Hysteresis on the exit side: a holding is sold only once it is 3% past the floor it
+    # entered through, rather than the moment it grazes it.
+    exit_threshold_slack: 0.05
+    # Quick to buy, slow to sell. Requiring 8 of 10 eligible days before entering cost
+    # 14pp over 2023 -- it sat 44% in bills through January waiting for names to settle.
+    # The exit side is where the persistence is worth having.
+    eligibility_window: 10
+    entry_min_eligible_days: 3
+    exit_max_eligible_days: 3
+    # Per-name crash stop, checked ahead of every other exit rule.
+    max_daily_drop: 0.10
+    # cooldown_after_exit counts runs, and a run is risk_refresh_minutes. At the old 15 that
+    # made the 4-run cooldown 60 minutes -- inert at a once-a-day cadence, so a name sold on
+    # Monday could be bought back on Tuesday. A session makes it four sessions.
+    risk_refresh_minutes: 1440
+    # --- allocation: fully deployed, always ----------------------------------------------
+    # 1.0, not 0.96: there is no reason to hold cash. Whatever the per-name cap cannot deploy
+    # is parked in the defensive sleeve by park_residual, so the book is risk assets plus
+    # SGOV and nothing else. (An account-level cash_buffer of 2% still applies at funding.)
+    risk_on_gross_max: 1.0
     name_weight_max: 0.5
-    risk_on_gross_max: 1
+    volatility_tilt: -1.0
+    # --- gates: OFF, pending measurement --------------------------------------------------
+    # breadth_min 0 disables the regime gate entirely: risk-off now happens only when nothing
+    # passes eligibility, which analyze_universe already handles by holding the defensive
+    # sleeve. The gate's only marginal effect was to zero the names that *did* qualify when
+    # few others did.
+    breadth_min: 0.0
+    regime_confirm_bars: 2
+    regime_exit_confirm_bars: 2
+    # Measured anti-predictive over 2023: names it let through returned -0.55% over the next
+    # 21 sessions against +0.12% for the ones it blocked (t=-2.91, p=0.004). It detects
+    # short-term reversal and treats it as acceleration.
+    require_entry_timing: false
+    momentum_change_enter: 0
+    # --- turnover hysteresis (kept: these are not gates, they are cost control) -----------
+    rebalance_weight_threshold: 0.08
+    cooldown_after_exit: 4
+    risk_adjusted_score: false
+    # --- drawdown protection: to be revisited ---------------------------------------------
+    # The volatility overlay never engaged once in 2023, and intraday_drawdown_limit is inert
+    # at a once-a-day cadence: the breaker rebases its session high on every run, so the
+    # measured drawdown is always exactly zero.
     target_portfolio_vol: 0.3
     high_vol_trigger: 1.3
     intraday_drawdown_limit: -0.015
@@ -251,6 +273,14 @@ algorithms:
     - VXX
     flat_equity_income_exposure: 0.5
     max_crisis_hedge_exposure: 0.15
+    # The GROWING test used to demand meso_return >= 0 while FALLING triggered at <= -0.01,
+    # so a 1pp dead band dumped the whole book into FLAT on any slightly-down session. Closing
+    # it is hysteresis by proxy and roughly halves turnover.
+    growth_meso_return: -0.01
+    # classify_spy_state has no memory, so a reading straddling a threshold flips the whole
+    # book. 5 was best in both the 2022 bear and the full 2022-2026 span, though the axis is
+    # not monotone (2 is worse than 1), so treat the exact value as weakly evidenced.
+    state_confirm_bars: 5
 dca_bot:
   dca_plan:
     max_item_amount: 2000.0
@@ -280,6 +310,7 @@ dca_bot:
 options_bot:
   strategy: none
   account_id: paper
+  enabled: false
 options:
   swing_dte_min: 30
   swing_dte_max: 60
