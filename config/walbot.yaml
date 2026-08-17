@@ -113,13 +113,28 @@ algorithms:
   bursty_dca:
     regime_ma_days: 200
     percent_b_lookback: 20
-    percent_b_threshold: 0.0
+    percent_b_threshold: 0
     rsi_lookback: 2
-    rsi_threshold: 10.0
-    max_trade_multiple: 3.0
-    max_monthly_multiple: 3.0
+    rsi_threshold: 10
+    max_trade_multiple: 3
+    max_monthly_multiple: 3
     value_averaging: true
-    backlog_relax_months: 1.0
+    backlog_relax_months: 1
+    plan:
+      buy:
+        amount: 100.0
+        items:
+        - symbol: SPY
+          amount: 25.0
+        - symbol: QQQ
+          amount: 20.0
+        - symbol: GLD
+          amount: 15.0
+        - symbol: TLT
+          amount: 10.0
+      sell:
+        amount: 0.0
+        items: []
   fast_momentum:
     risk_on_universe:
     - QQQM
@@ -197,43 +212,21 @@ algorithms:
     max_crisis_hedge_exposure: 0.15
     growth_meso_return: -0.01
     state_confirm_bars: 5
-dca_bot:
-  dca_plan:
-    max_item_amount: 2000.0
-    buy:
-      amount: 2675.0
-      items:
-      - symbol: XSD
-        amount: 1600.0
-      - symbol: GLD
-        amount: 1075.0
-    sell:
-      amount: 0
-      items: []
-  dca_plans:
-    paper:
-      max_item_amount: 2000.0
+  dca:
+    plan:
       buy:
-        amount: 2675.0
+        amount: 100.0
         items:
+        - symbol: SPY
+          amount: 25.0
+        - symbol: QQQ
+          amount: 20.0
         - symbol: GLD
-          amount: 1075.0
-        - symbol: XSD
-          amount: 1600.0
+          amount: 15.0
+        - symbol: TLT
+          amount: 10.0
       sell:
-        amount: 0
-        items: []
-    local_paper:
-      max_item_amount: 2000.0
-      buy:
-        amount: 674.0
-        items:
-        - symbol: GLD
-          amount: 337.0
-        - symbol: XSD
-          amount: 337.0
-      sell:
-        amount: 0
+        amount: 0.0
         items: []
 options_bot:
   strategy: none
