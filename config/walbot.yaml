@@ -122,18 +122,20 @@ algorithms:
     backlog_relax_months: 1
     plan:
       buy:
-        amount: 100.0
+        amount: 2400.0
         items:
+        - symbol: XSD
+          amount: 500.0
         - symbol: SPY
-          amount: 25.0
-        - symbol: QQQ
-          amount: 20.0
+          amount: 750.0
+        - symbol: XBI
+          amount: 500.0
         - symbol: GLD
-          amount: 15.0
-        - symbol: TLT
-          amount: 10.0
+          amount: 300.0
+        - symbol: SCHD
+          amount: 350.0
       sell:
-        amount: 0.0
+        amount: 0
         items: []
   fast_momentum:
     risk_on_universe:
@@ -215,18 +217,20 @@ algorithms:
   dca:
     plan:
       buy:
-        amount: 100.0
+        amount: 2400.0
         items:
+        - symbol: XSD
+          amount: 500.0
         - symbol: SPY
-          amount: 25.0
-        - symbol: QQQ
-          amount: 20.0
+          amount: 750.0
+        - symbol: XBI
+          amount: 500.0
         - symbol: GLD
-          amount: 15.0
-        - symbol: TLT
-          amount: 10.0
+          amount: 300.0
+        - symbol: SCHD
+          amount: 350.0
       sell:
-        amount: 0.0
+        amount: 0
         items: []
 options_bot:
   strategy: none
