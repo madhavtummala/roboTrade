@@ -74,6 +74,7 @@ tradable_universe:
   - VGK
   - VTEB
   - VTV
+  - VXUS
   - VXX
   - XBI
   - XOP
@@ -82,41 +83,34 @@ tradable_universe:
   - XYLD
 algorithm_bot:
   trading_account_id: paper
-  strategy: dca
+  strategy: bursty_dca
   backtest_period: 3m
   require_trade_approval: false
   trade_approval_timeout_seconds: 300
   trade_approval_poll_seconds: 5
   bindings:
   - id: b2
-    strategy: dca
-    account_id: local_paper
-    enabled: false
-    frequency: 1hr
-  - id: b3
     strategy: bursty_dca
-    account_id: local_paper
-    enabled: false
-    frequency: 1hr
+    account_id: schwab_individual
+    enabled: true
+    frequency: 1d
   - id: b4
     strategy: rally_rotation
     account_id: paper
     enabled: true
     frequency: 1hr
-  enabled: false
+  - id: b5
+    strategy: intraday_pick
+    account_id: local_paper
+    enabled: false
+    frequency: 15m
+  enabled: true
 algorithms:
   bursty_dca:
     regime_ma_days: 150
-    percent_b_lookback: 20
-    percent_b_threshold: 0
-    rsi_lookback: 2
-    rsi_threshold: 20
-    max_trade_multiple: 2
+    scaling_factor: 20
+    cap_boost: 1
     max_monthly_multiple: 3
-    value_averaging: true
-    backlog_relax_months: 3
-    reversal_multiplier: 1.5
-    reversal_ma_days: 10
     plan:
       buy:
         amount: 2000
@@ -142,6 +136,7 @@ algorithms:
     - GLD
     - IWM
     - SLV
+    - VXUS
     defensive_universe:
     - SGOV
     max_positions: 3
@@ -176,17 +171,20 @@ algorithms:
       sell:
         amount: 0
         items: []
-options_bot:
-  strategy: none
-  account_id: paper
-  enabled: false
-options:
-  swing_dte_min: 30
-  swing_dte_max: 60
-  swing_min_delta: 0.35
-  swing_max_delta: 0.65
-  swing_max_contracts: 1
-  swing_max_premium: 500.0
-  swing_min_open_interest: 100
-  swing_max_spread_pct: 0.2
-  swing_strike_range_pct: 0.15
+  intraday_pick:
+    benchmark_symbol: SPY
+    candidate_symbols:
+    - XSD
+    force_option_type: call
+    trend_ma_period: 50
+    trend_lookback_days: 5
+    contracts_per_signal: 1
+    max_notional_per_trade: 1000
+    entry_discount_pct: 0.05
+    exit_target_pct: 0.3
+    vol_short_window: 5
+    vol_long_window: 20
+    range_expansion_threshold: 1.0
+    intraday_bar_minutes: 5
+    min_price: 50
+    max_price: 1000
