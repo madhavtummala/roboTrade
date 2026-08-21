@@ -22,6 +22,9 @@ data_sources:
   eod_market_data:
     providers:
       schwab: {}
+  streaming_market_data:
+    providers:
+      schwab: {}
   sentiment_data:
     providers: null
   dividends:
