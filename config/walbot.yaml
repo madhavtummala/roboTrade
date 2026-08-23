@@ -33,14 +33,6 @@ data_sources:
         api_key_env: ALPACA_API_KEY
         api_secret_env: ALPACA_API_SECRET
       yfinance: {}
-notifications:
-  providers:
-    telegram:
-      enabled: false
-      bot_token: ''
-      chat_id: ''
-      api_root: https://api.telegram.org
-      timeout_seconds: 5
 tradable_universe:
   master_list: data/tradable_etfs.csv
   symbols:
@@ -51,6 +43,7 @@ tradable_universe:
   - GLD
   - GPIX
   - HYG
+  - IAU
   - IBIT
   - IEMG
   - IJH
@@ -69,11 +62,12 @@ tradable_universe:
   - SGOV
   - SH
   - SLV
-  - SPY
+  - SPYM
   - TLT
   - UNG
   - USMV
   - USO
+  - VEA
   - VGK
   - VTEB
   - VTV
@@ -88,58 +82,59 @@ algorithm_bot:
   trading_account_id: paper
   strategy: bursty_dca
   backtest_period: 3m
-  require_trade_approval: false
-  trade_approval_timeout_seconds: 300
-  trade_approval_poll_seconds: 5
   bindings:
   - id: b2
     strategy: bursty_dca
     account_id: schwab_individual
     enabled: true
-    frequency: 1d
+    cron: 0 11 * * 1-5
   - id: b4
     strategy: rally_rotation
     account_id: paper
     enabled: true
-    frequency: 1hr
+    cron: 15 10-14 * * 1-5
   - id: b5
-    strategy: intraday_pick
+    strategy: options_flip
     account_id: local_paper
     enabled: false
-    frequency: 15m
+    cron: '*/15 9-15 * * 1-5'
   enabled: true
 algorithms:
   bursty_dca:
     regime_ma_days: 150
-    scaling_factor: 20
-    cap_boost: 1
+    scaling_factor: 0.5
     max_monthly_multiple: 3
+    relax_months: 3
+    relax_depth: 0.7
     plan:
       buy:
-        amount: 2000
+        amount: 1200
+        items:
+        - symbol: SPYM
+          amount: 500
+        - symbol: IAU
+          amount: 500
+        - symbol: XBI
+          amount: 200
+      sell:
+        amount: 500
         items:
         - symbol: XSD
           amount: 500
-        - symbol: SPY
-          amount: 500
-        - symbol: XBI
-          amount: 500
-        - symbol: GLD
-          amount: 500
-      sell:
-        amount: 0
-        items: []
   rally_rotation:
     risk_on_universe:
     - QQQM
     - XSD
     - XBI
+    - VEA
+    - USO
+    - IAU
+    - IEMG
+    - SLV
     - KRE
     - XRT
-    - GLD
     - IWM
-    - SLV
-    - VXUS
+    - IBIT
     defensive_universe:
     - SGOV
     max_positions: 3
@@ -153,29 +148,13 @@ algorithms:
     vol_ceiling: 0.5
     vol_rising_threshold: 0.3
     rebalance_weight_threshold: 0.08
-    range_expansion_limit: 2.0
+    range_expansion_limit: 2
     climax_ma_distance_min: 0.15
     climax_volume_ratio_min: 1.5
     trend_ma_days: 0
     trend_return_days: 0
-  dca:
-    plan:
-      buy:
-        amount: 2000
-        items:
-        - symbol: SPY
-          amount: 500
-        - symbol: GLD
-          amount: 500
-        - symbol: XBI
-          amount: 500
-        - symbol: XSD
-          amount: 500
-      sell:
-        amount: 0
-        items: []
-  intraday_pick:
-    benchmark_symbol: SPY
+  options_flip:
+    benchmark_symbol: SPYM
     candidate_symbols:
     - XSD
     force_option_type: call
@@ -187,7 +166,7 @@ algorithms:
     exit_target_pct: 0.3
     vol_short_window: 5
     vol_long_window: 20
-    range_expansion_threshold: 1.0
+    range_expansion_threshold: 1
     intraday_bar_minutes: 5
     min_price: 50
     max_price: 1000
