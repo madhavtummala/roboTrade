@@ -17,9 +17,13 @@ accounts:
       broker: paper
 data_sources:
   intraday_market_data:
+    provider_order:
+    - schwab
     providers:
       schwab: {}
   eod_market_data:
+    provider_order:
+    - schwab
     providers:
       schwab: {}
   streaming_market_data:
@@ -92,12 +96,12 @@ algorithm_bot:
     strategy: rally_rotation
     account_id: paper
     enabled: true
-    cron: 15 10-14 * * 1-5
+    cron: '*/30 10-15 * * 1-5'
   - id: b5
     strategy: options_flip
-    account_id: local_paper
-    enabled: false
-    cron: '*/15 9-15 * * 1-5'
+    account_id: paper
+    enabled: true
+    cron: '*/15 10-15 * * 1-5'
   enabled: true
 algorithms:
   bursty_dca:
@@ -108,19 +112,19 @@ algorithms:
     relax_depth: 0.7
     plan:
       buy:
-        amount: 1200
+        amount: 1000
         items:
+        - symbol: IAU
+          amount: 250
+        - symbol: XBI
+          amount: 250
         - symbol: SPYM
           amount: 500
-        - symbol: IAU
-          amount: 500
-        - symbol: XBI
-          amount: 200
       sell:
-        amount: 500
+        amount: 1000
         items:
         - symbol: XSD
-          amount: 500
+          amount: 1000
   rally_rotation:
     risk_on_universe:
     - QQQM
@@ -154,19 +158,22 @@ algorithms:
     trend_ma_days: 0
     trend_return_days: 0
   options_flip:
-    benchmark_symbol: SPYM
-    candidate_symbols:
-    - XSD
-    force_option_type: call
-    trend_ma_period: 50
-    trend_lookback_days: 5
-    contracts_per_signal: 1
+    symbols:
+    - IAU
+    - IBIT
+    trend_ma_period: 20
+    trend_min_return: 0.005
+    premarket_confirm_min: 0.25
+    min_dte: 5
+    target_delta: 0.75
+    min_open_interest: 50
+    target_fill_probability: 0.6
+    entry_decay_power: 0.25
+    stop_loss_pct: 0.1
+    exit_fill_probability: 0.75
+    max_hold_sessions: 3
+    max_annual_volatility: 0.8
+    excursion_lookback_days: 20
+    min_expected_profit: 50
+    contracts_per_position: 1
     max_notional_per_trade: 1000
-    entry_discount_pct: 0.05
-    exit_target_pct: 0.3
-    vol_short_window: 5
-    vol_long_window: 20
-    range_expansion_threshold: 1
-    intraday_bar_minutes: 5
-    min_price: 50
-    max_price: 1000
