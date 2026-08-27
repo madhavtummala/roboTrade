@@ -1,15 +1,19 @@
-default: paper
+default: alpaca1
 accounts:
   items:
-    paper:
+    alpaca1:
       label: Alpaca Paper
       broker: alpaca
       api_key_env: ALPACA_API_KEY
       api_secret_env: ALPACA_API_SECRET
       base_url: https://paper-api.alpaca.markets
       data_feed: iex
-    schwab_individual:
-      label: Schwab Individual
+    schwab1:
+      label: Schwab Main
+      broker: schwab
+      schwab_account_number: 8540-2329
+    schwab2:
+      label: Schwab Small
       broker: schwab
       schwab_account_number: 3959-7066
     local_paper:
@@ -46,8 +50,9 @@ tradable_universe:
   - EWJ
   - GLD
   - GPIX
+  - GTEK
   - HYG
-  - IAU
+  - IAUM
   - IBIT
   - IEMG
   - IJH
@@ -89,20 +94,20 @@ algorithm_bot:
   bindings:
   - id: b2
     strategy: bursty_dca
-    account_id: schwab_individual
-    enabled: true
+    account_id: alpaca1
+    enabled: false
     cron: 0 11 * * 1-5
   - id: b4
     strategy: rally_rotation
-    account_id: paper
-    enabled: true
+    account_id: alpaca1
+    enabled: false
     cron: '*/30 10-15 * * 1-5'
   - id: b5
     strategy: options_flip
-    account_id: paper
-    enabled: true
-    cron: '*/15 10-15 * * 1-5'
-  enabled: true
+    account_id: alpaca1
+    enabled: false
+    cron: '*/5 10-15 * * 1-5'
+  enabled: false
 algorithms:
   bursty_dca:
     regime_ma_days: 150
@@ -112,19 +117,21 @@ algorithms:
     relax_depth: 0.7
     plan:
       buy:
-        amount: 1000
+        amount: 1300
         items:
-        - symbol: IAU
-          amount: 250
         - symbol: XBI
-          amount: 250
+          amount: 150
+        - symbol: GTEK
+          amount: 150
+        - symbol: QQQM
+          amount: 400
+        - symbol: IAUM
+          amount: 150
         - symbol: SPYM
-          amount: 500
+          amount: 450
       sell:
-        amount: 1000
-        items:
-        - symbol: XSD
-          amount: 1000
+        amount: 0
+        items: []
   rally_rotation:
     risk_on_universe:
     - QQQM
@@ -132,7 +139,7 @@ algorithms:
     - XBI
     - VEA
     - USO
-    - IAU
+    - IAUM
     - IEMG
     - SLV
     - KRE
@@ -145,35 +152,34 @@ algorithms:
     entry_rank_max: 3
     exit_rank_max: 6
     rerank_interval_days: 5
-    min_base_score: 0
-    entry_min_eligible_days: 3
-    selection_horizon_macro_minutes: 7800
+    entry_min_eligible_days: 1
     volatility_tilt: -0.5
     vol_ceiling: 0.5
-    vol_rising_threshold: 0.3
     rebalance_weight_threshold: 0.08
-    range_expansion_limit: 2
-    climax_ma_distance_min: 0.15
-    climax_volume_ratio_min: 1.5
-    trend_ma_days: 0
-    trend_return_days: 0
+    nano_days: 1
+    micro_days: 2
+    meso_days: 3
+    macro_days: 20
   options_flip:
     symbols:
-    - IAU
+    - XSD
     - IBIT
-    trend_ma_period: 20
-    trend_min_return: 0.005
-    premarket_confirm_min: 0.25
-    min_dte: 5
-    target_delta: 0.75
-    min_open_interest: 50
-    target_fill_probability: 0.6
-    entry_decay_power: 0.25
-    stop_loss_pct: 0.1
-    exit_fill_probability: 0.75
-    max_hold_sessions: 3
+    - GLD
+    contracts_per_trade: 1
+    stop_loss_pct: 0
+    max_hold_sessions: 4
+    target_reach: 0.42
+    exit_gain_share: 0.7
+    exit_patience: 0.7
+    entry_reach: 0.55
+    entry_patience: 1.5
+    min_profit_per_contract: 15
+    target_delta: 0.6
+    level_lookback_days: 80
+    min_trend_strength: 0.5
+    max_notional_per_trade: 1500
+    min_dte: 7
+    min_open_interest: 100
+    max_spread_pct: 0.06
+    max_gap_down_atr: 1
     max_annual_volatility: 0.8
-    excursion_lookback_days: 20
-    min_expected_profit: 50
-    contracts_per_position: 1
-    max_notional_per_trade: 1000
